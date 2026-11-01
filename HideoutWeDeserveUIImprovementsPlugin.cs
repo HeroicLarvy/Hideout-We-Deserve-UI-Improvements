@@ -35,48 +35,79 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     private static ConfigEntry<bool> _openStationMenuWithoutZoom;
     private static ConfigEntry<bool> _showCurrentUpgradeItemMarkers;
     private static ConfigEntry<bool> _showFutureUpgradeItemMarkers;
+    private static ConfigEntry<bool> _showFavoriteCraftItemMarkers;
     private static ConfigEntry<bool> _showUpgradeItemMarkersInStash;
     private static ConfigEntry<bool> _showUpgradeItemTooltipsOnHover;
-    private static ConfigEntry<bool> _showUpgradeItemTooltipsOnInspect;
     private static ConfigEntry<Color> _currentUpgradeItemMarkerColor;
     private static ConfigEntry<Color> _futureUpgradeItemMarkerColor;
+    private static ConfigEntry<Color> _favoriteCraftItemMarkerColor;
     private static AreaWorldPanel _hoveredWorldPanel;
     private static GridItemView _hoveredRaidItemView;
+    private static HideoutRepresentation _hideoutRepresentationForMarkers;
     private static AreasPanel _configuredAreasPanel;
     private static CanvasGroup _areasPanelCanvasGroup;
     private static float _areasPanelOriginalAlpha;
     private static bool _areasPanelOriginalBlocksRaycasts;
     private static bool _areasPanelOriginalInteractable;
     private static float _nextRequirementRefreshAt;
-    private static float _nextUpgradeItemNeedRefreshAt;
+    private static float _upgradeItemNeedsRefreshAt;
+    private static float _nextUpgradeItemNeedsLoadRetryAt;
+    private static bool _upgradeItemNeedsDirty;
+    private static bool _hasLoadedUpgradeItemNeeds;
     private static readonly Dictionary<string, ItemIcon> ItemIcons = new Dictionary<string, ItemIcon>();
     private static readonly Dictionary<string, Item> RecipeOutputItems = new Dictionary<string, Item>();
     private static readonly Dictionary<string, List<UpgradeItemNeed>> CurrentUpgradeItemNeeds =
         new Dictionary<string, List<UpgradeItemNeed>>();
     private static readonly Dictionary<string, List<UpgradeItemNeed>> FutureUpgradeItemNeeds =
         new Dictionary<string, List<UpgradeItemNeed>>();
+    private static readonly Dictionary<string, List<FavoriteCraftItemNeed>> FavoriteCraftItemNeeds =
+        new Dictionary<string, List<FavoriteCraftItemNeed>>();
     private static readonly Dictionary<GridItemView, Image> RaidItemMarkers =
         new Dictionary<GridItemView, Image>();
     private static readonly HashSet<GridItemView> RaidItemViews = new HashSet<GridItemView>();
-    private static readonly Dictionary<InfoWindow, Text> InspectedItemRequirementLabels =
-        new Dictionary<InfoWindow, Text>();
-    private static readonly HashSet<InfoWindow> OpenItemInfoWindows = new HashSet<InfoWindow>();
     private static readonly Dictionary<string, Task<Sprite>> TraderAvatarTasks = new Dictionary<string, Task<Sprite>>();
     private static readonly HashSet<string> TraderAvatarWarnings = new HashSet<string>();
     private static readonly HashSet<string> MissingRecipeWarnings = new HashSet<string>();
-    private static Sprite _currentUpgradeMarkerSprite;
-    private static Sprite _futureUpgradeMarkerSprite;
-    private static Sprite _combinedUpgradeMarkerSprite;
+    private static readonly Dictionary<int, Sprite> UpgradeMarkerSprites = new Dictionary<int, Sprite>();
     private static Vector2 _raidItemTooltipScrollPosition;
     private static string _raidItemTooltipTemplateId;
     private static GUISkin _tooltipStyleSkin;
     private static Font _tooltipFont;
     private static GUIStyle _tooltipSectionStyle;
     private static GUIStyle _tooltipBodyStyle;
+    private static GUIStyle _raidItemTooltipBodyStyle;
     private static GUIStyle _tooltipCountStyle;
     private static GUIStyle _tooltipTimerStyle;
     private static GUIStyle _tooltipProgressStyle;
     private Harmony _harmony;
+
+    private sealed class FavoriteCraftItemNeed
+    {
+        public readonly string OutputName;
+        public readonly int OwnedCount;
+        public readonly int NeededCount;
+
+        public FavoriteCraftItemNeed(string outputName, int ownedCount, int neededCount)
+        {
+            OutputName = outputName;
+            OwnedCount = ownedCount;
+            NeededCount = neededCount;
+        }
+    }
+
+    private sealed class PendingFavoriteCraftItemNeed
+    {
+        public readonly string TemplateId;
+        public readonly string OutputName;
+        public readonly ItemRequirement Requirement;
+
+        public PendingFavoriteCraftItemNeed(string templateId, string outputName, ItemRequirement requirement)
+        {
+            TemplateId = templateId;
+            OutputName = outputName;
+            Requirement = requirement;
+        }
+    }
 
     private sealed class UpgradeItemNeed
     {
@@ -91,6 +122,29 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             StageName = stageName;
             OwnedCount = ownedCount;
             NeededCount = neededCount;
+        }
+    }
+
+    internal sealed class UpgradeMarkerHoverHandler :
+        MonoBehaviour,
+        UnityEngine.EventSystems.IPointerEnterHandler,
+        UnityEngine.EventSystems.IPointerExitHandler
+    {
+        private GridItemView _itemView;
+
+        internal void Initialize(GridItemView itemView)
+        {
+            _itemView = itemView;
+        }
+
+        public void OnPointerEnter(UnityEngine.EventSystems.PointerEventData eventData)
+        {
+            HideoutWeDeserveUIImprovementsPlugin.OnRaidItemMarkerPointerEntered(_itemView);
+        }
+
+        public void OnPointerExit(UnityEngine.EventSystems.PointerEventData eventData)
+        {
+            HideoutWeDeserveUIImprovementsPlugin.OnRaidItemMarkerPointerExited(_itemView);
         }
     }
 
@@ -205,45 +259,52 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             false,
             "Open the station menu when clicking an in-hideout station without zooming the camera.");
         _showCurrentUpgradeItemMarkers = Config.Bind(
-            "Raid Item Markers",
+            "Item Markers",
             "ShowCurrentUpgradeRequirements",
             true,
             "Mark raid items still needed for each station's next construction or upgrade.");
         _currentUpgradeItemMarkerColor = Config.Bind(
-            "Raid Item Markers",
+            "Item Markers",
             "CurrentUpgradeMarkerColor",
             new Color(68f / 255f, 210f / 255f, 125f / 255f, 1f),
             "Color used for items needed by the next hideout construction or upgrade.");
         _showFutureUpgradeItemMarkers = Config.Bind(
-            "Raid Item Markers",
+            "Item Markers",
             "ShowFutureUpgradeRequirements",
             true,
             "Mark raid items still needed for later hideout upgrade stages.");
         _futureUpgradeItemMarkerColor = Config.Bind(
-            "Raid Item Markers",
+            "Item Markers",
             "FutureUpgradeMarkerColor",
             new Color(75f / 255f, 164f / 255f, 1f, 1f),
             "Color used for items needed by later hideout upgrade stages.");
+        _showFavoriteCraftItemMarkers = Config.Bind(
+            "Item Markers",
+            "ShowFavoriteCraftIngredients",
+            true,
+            "Mark ingredients needed by hideout crafts you have favorited.");
+        _favoriteCraftItemMarkerColor = Config.Bind(
+            "Item Markers",
+            "FavoriteCraftMarkerColor",
+            new Color(1f, 0.78f, 0.22f, 1f),
+            "Color used for items needed by favorited hideout crafts.");
         _showUpgradeItemMarkersInStash = Config.Bind(
-            "Raid Item Markers",
+            "Item Markers",
             "ShowUpgradeMarkersInStash",
             true,
-            "Show hideout upgrade item markers in stash and hideout item grids.");
+            "Show item markers in stash and hideout item grids.");
         _showUpgradeItemTooltipsOnHover = Config.Bind(
-            "Raid Item Markers",
+            "Item Markers",
             "ShowUpgradeTooltipsOnHover",
             true,
-            "Show the hideout stations and remaining quantity when hovering a marked item.");
-        _showUpgradeItemTooltipsOnInspect = Config.Bind(
-            "Raid Item Markers",
-            "ShowUpgradeDetailsOnInspect",
-            true,
-            "Show hideout upgrade needs in an item's Inspect window.");
+            "Show item details when hovering a marker.");
         _showCurrentUpgradeItemMarkers.SettingChanged += OnUpgradeMarkerVisibilityChanged;
         _showFutureUpgradeItemMarkers.SettingChanged += OnUpgradeMarkerVisibilityChanged;
+        _showFavoriteCraftItemMarkers.SettingChanged += OnUpgradeMarkerVisibilityChanged;
         _showUpgradeItemMarkersInStash.SettingChanged += OnUpgradeMarkerVisibilityChanged;
         _currentUpgradeItemMarkerColor.SettingChanged += OnUpgradeMarkerColorChanged;
         _futureUpgradeItemMarkerColor.SettingChanged += OnUpgradeMarkerColorChanged;
+        _favoriteCraftItemMarkerColor.SettingChanged += OnUpgradeMarkerColorChanged;
         _hideBottomScrollbar.SettingChanged += OnBottomBarSettingChanged;
         _harmony = new Harmony(PluginId);
         _harmony.Patch(
@@ -261,6 +322,12 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         _harmony.Patch(
             AccessTools.Method(typeof(GridItemView), nameof(GridItemView.NewGridItemView)),
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemViewCreated)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(ItemView), nameof(ItemView.NewItemView)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemViewInitialized)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(ItemView), nameof(ItemView.RegisterItemView)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemViewInitialized)));
         _harmony.Patch(
             AccessTools.Method(typeof(GridItemView), nameof(GridItemView.OnRefreshItem)),
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemViewRefreshed)));
@@ -281,35 +348,14 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                 postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemViewRefreshed)));
         }
         _harmony.Patch(
-            AccessTools.Method(typeof(GridItemView), nameof(GridItemView.OnPointerEnter)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemHoverStarted)));
+            AccessTools.Method(typeof(GridItemView), nameof(GridItemView.ShowTooltip)),
+            prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(ShouldShowDefaultItemTooltip)));
         _harmony.Patch(
-            AccessTools.Method(typeof(GridItemView), nameof(GridItemView.OnPointerExit)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemHoverEnded)));
-        MethodInfo infoWindowShowMethod = AccessTools.Method(
-            typeof(InfoWindow),
-            nameof(InfoWindow.Show),
-            new[]
-            {
-                typeof(ItemContext),
-                typeof(IItemOwner),
-                typeof(EFT.Trading.Trader),
-                typeof(ItemUiContext),
-                typeof(ContextInteractions<EItemInfoButton>)
-            });
-        if (infoWindowShowMethod == null)
-        {
-            Logger.LogWarning("Could not find the item-specific Inspect window method; Inspect requirement details are unavailable.");
-        }
-        else
-        {
-            _harmony.Patch(
-                infoWindowShowMethod,
-                postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemInfoWindowShown)));
-        }
+            AccessTools.Method(typeof(HideoutRepresentation), nameof(HideoutRepresentation.AddFavoriteScheme)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnFavoriteProductionSchemesChanged)));
         _harmony.Patch(
-            AccessTools.DeclaredMethod(typeof(InfoWindow), nameof(InfoWindow.Close)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemInfoWindowClosed)));
+            AccessTools.Method(typeof(HideoutRepresentation), nameof(HideoutRepresentation.RemoveFavoriteScheme)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnFavoriteProductionSchemesChanged)));
 
         Logger.LogInfo($"{PluginName} loaded.");
     }
@@ -320,9 +366,17 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         _hideBottomScrollbar.SettingChanged -= OnBottomBarSettingChanged;
         _showCurrentUpgradeItemMarkers.SettingChanged -= OnUpgradeMarkerVisibilityChanged;
         _showFutureUpgradeItemMarkers.SettingChanged -= OnUpgradeMarkerVisibilityChanged;
+        _showFavoriteCraftItemMarkers.SettingChanged -= OnUpgradeMarkerVisibilityChanged;
         _showUpgradeItemMarkersInStash.SettingChanged -= OnUpgradeMarkerVisibilityChanged;
         _currentUpgradeItemMarkerColor.SettingChanged -= OnUpgradeMarkerColorChanged;
         _futureUpgradeItemMarkerColor.SettingChanged -= OnUpgradeMarkerColorChanged;
+        _favoriteCraftItemMarkerColor.SettingChanged -= OnUpgradeMarkerColorChanged;
+        if (_hideoutRepresentationForMarkers != null)
+        {
+            _hideoutRepresentationForMarkers.OnItemsChanged -= OnHideoutItemsChanged;
+            _hideoutRepresentationForMarkers.OnItemChanged -= OnHideoutItemChanged;
+            _hideoutRepresentationForMarkers = null;
+        }
         if (_areasPanelCanvasGroup != null)
         {
             RestoreBottomBarVisibility();
@@ -331,10 +385,13 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         _instance = null;
         _hoveredWorldPanel = null;
         _hoveredRaidItemView = null;
+        _upgradeItemNeedsDirty = false;
+        _hasLoadedUpgradeItemNeeds = false;
         ItemIcons.Clear();
         RecipeOutputItems.Clear();
         CurrentUpgradeItemNeeds.Clear();
         FutureUpgradeItemNeeds.Clear();
+        FavoriteCraftItemNeeds.Clear();
         foreach (Image marker in RaidItemMarkers.Values)
         {
             if (marker != null)
@@ -345,16 +402,6 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
         RaidItemMarkers.Clear();
         RaidItemViews.Clear();
-        foreach (Text label in InspectedItemRequirementLabels.Values)
-        {
-            if (label != null)
-            {
-                UnityEngine.Object.Destroy(label.transform.parent.gameObject);
-            }
-        }
-
-        InspectedItemRequirementLabels.Clear();
-        OpenItemInfoWindows.Clear();
         MissingRecipeWarnings.Clear();
         TraderAvatarTasks.Clear();
         TraderAvatarWarnings.Clear();
@@ -363,12 +410,18 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private void Update()
     {
-        if (Time.realtimeSinceStartup >= _nextUpgradeItemNeedRefreshAt)
+        if (!_hasLoadedUpgradeItemNeeds &&
+            Time.realtimeSinceStartup >= _nextUpgradeItemNeedsLoadRetryAt)
         {
+            EnsureUpgradeItemNeedsLoaded();
+            _nextUpgradeItemNeedsLoadRetryAt = Time.realtimeSinceStartup + 1.5f;
+        }
+
+        if (_upgradeItemNeedsDirty && Time.realtimeSinceStartup >= _upgradeItemNeedsRefreshAt)
+        {
+            _upgradeItemNeedsDirty = false;
             RefreshUpgradeItemNeedsFromHideout();
             RefreshRaidItemMarkers();
-            RefreshInspectedItemRequirementLabels();
-            _nextUpgradeItemNeedRefreshAt = Time.realtimeSinceStartup + 1f;
         }
     }
 
@@ -385,11 +438,22 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     {
         ApplyBottomBarVisibility(__instance);
         RefreshUpgradeItemNeedsFromHideout();
+        RefreshRaidItemMarkers();
     }
 
     private static void OnRaidItemViewCreated(GridItemView __result)
     {
+        EnsureUpgradeItemNeedsLoaded();
         RefreshRaidItemMarker(__result);
+    }
+
+    private static void OnItemViewInitialized(ItemView __instance)
+    {
+        if (__instance is GridItemView gridItemView)
+        {
+            EnsureUpgradeItemNeedsLoaded();
+            RefreshRaidItemMarker(gridItemView);
+        }
     }
 
     private static void OnRaidItemViewRefreshed(GridItemView __instance)
@@ -397,185 +461,68 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         RefreshRaidItemMarker(__instance);
     }
 
-    private static void OnRaidItemHoverStarted(GridItemView __instance)
+    private static bool ShouldShowDefaultItemTooltip(GridItemView __instance)
     {
-        _hoveredRaidItemView = __instance;
+        return !_showUpgradeItemTooltipsOnHover.Value || _hoveredRaidItemView != __instance;
     }
 
-    private static void OnRaidItemHoverEnded(GridItemView __instance, UnityEngine.EventSystems.PointerEventData eventData)
+    internal static void OnRaidItemMarkerPointerEntered(GridItemView itemView)
     {
-        if (_hoveredRaidItemView == __instance)
+        if (!_showUpgradeItemTooltipsOnHover.Value || itemView == null)
+        {
+            return;
+        }
+
+        _hoveredRaidItemView = itemView;
+        _raidItemTooltipTemplateId = null;
+        itemView.HideTooltip();
+    }
+
+    internal static void OnRaidItemMarkerPointerExited(GridItemView itemView)
+    {
+        if (_hoveredRaidItemView == itemView)
         {
             _hoveredRaidItemView = null;
+            _raidItemTooltipTemplateId = null;
         }
     }
 
-    private static void OnItemInfoWindowShown(InfoWindow __instance)
+    private static void EnsureUpgradeItemNeedsLoaded()
     {
-        if (__instance == null)
+        if (!_hasLoadedUpgradeItemNeeds && Singleton<HideoutRepresentation>.Instantiated)
         {
-            return;
-        }
-
-        OpenItemInfoWindows.Add(__instance);
-        if (!_showUpgradeItemTooltipsOnInspect.Value)
-        {
-            return;
-        }
-
-        FieldInfo itemField = AccessTools.Field(typeof(InfoWindow), "_item");
-        if (itemField?.GetValue(__instance) is not Item item)
-        {
-            return;
-        }
-
-        AddOrUpdateInspectedItemRequirementLabel(__instance, item);
-    }
-
-    private static void OnItemInfoWindowClosed(InfoWindow __instance)
-    {
-        OpenItemInfoWindows.Remove(__instance);
-        RemoveInspectedItemRequirementLabel(__instance);
-    }
-
-    private static void RemoveInspectedItemRequirementLabel(InfoWindow infoWindow)
-    {
-        if (infoWindow != null && InspectedItemRequirementLabels.TryGetValue(infoWindow, out Text label))
-        {
-            InspectedItemRequirementLabels.Remove(infoWindow);
-            if (label != null)
-            {
-                UnityEngine.Object.Destroy(label.transform.parent.gameObject);
-            }
+            RefreshUpgradeItemNeedsFromHideout();
+            RefreshRaidItemMarkers();
         }
     }
 
-    private static void AddOrUpdateInspectedItemRequirementLabel(InfoWindow infoWindow, Item item)
+    private static void OnHideoutItemsChanged()
     {
-        string text = GetUpgradeItemNeedText(item?.TemplateId.ToString());
-        if (string.IsNullOrEmpty(text))
-        {
-            RemoveInspectedItemRequirementLabel(infoWindow);
-            return;
-        }
-
-        if (!InspectedItemRequirementLabels.TryGetValue(infoWindow, out Text label) || label == null)
-        {
-            var panelObject = new GameObject(
-                "HideoutUpgradeRequirements",
-                typeof(RectTransform),
-                typeof(CanvasRenderer),
-                typeof(Image));
-            panelObject.transform.SetParent(infoWindow.transform, false);
-            RectTransform panelRect = panelObject.GetComponent<RectTransform>();
-            panelRect.anchorMin = new Vector2(0f, 0f);
-            panelRect.anchorMax = new Vector2(1f, 0f);
-            panelRect.pivot = new Vector2(0.5f, 0f);
-            panelRect.anchoredPosition = new Vector2(0f, 8f);
-            panelRect.sizeDelta = new Vector2(-20f, 96f);
-
-            Image background = panelObject.GetComponent<Image>();
-            background.color = new Color(0.04f, 0.05f, 0.06f, 0.92f);
-            background.raycastTarget = false;
-
-            var textObject = new GameObject(
-                "RequirementsText",
-                typeof(RectTransform),
-                typeof(CanvasRenderer),
-                typeof(Text));
-            textObject.transform.SetParent(panelObject.transform, false);
-            RectTransform textRect = textObject.GetComponent<RectTransform>();
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.offsetMin = new Vector2(8f, 6f);
-            textRect.offsetMax = new Vector2(-8f, -6f);
-
-            label = textObject.GetComponent<Text>();
-            label.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            label.fontSize = 14;
-            label.alignment = TextAnchor.UpperLeft;
-            label.horizontalOverflow = HorizontalWrapMode.Wrap;
-            label.verticalOverflow = VerticalWrapMode.Overflow;
-            label.color = Color.white;
-            label.raycastTarget = false;
-            InspectedItemRequirementLabels[infoWindow] = label;
-        }
-
-        label.text = text;
-        label.transform.parent.gameObject.SetActive(true);
+        _upgradeItemNeedsDirty = true;
+        _upgradeItemNeedsRefreshAt = Time.realtimeSinceStartup + 0.25f;
     }
 
-    private static string GetUpgradeItemNeedText(string templateId)
+    private static void OnHideoutItemChanged(Item item)
     {
-        if (string.IsNullOrEmpty(templateId))
-        {
-            return null;
-        }
-
-        CurrentUpgradeItemNeeds.TryGetValue(templateId, out List<UpgradeItemNeed> currentNeeds);
-        FutureUpgradeItemNeeds.TryGetValue(templateId, out List<UpgradeItemNeed> futureNeeds);
-        bool showCurrent = _showCurrentUpgradeItemMarkers.Value && currentNeeds != null;
-        bool showFuture = _showFutureUpgradeItemMarkers.Value && futureNeeds != null;
-        if (!showCurrent && !showFuture)
-        {
-            return null;
-        }
-
-        var lines = new List<string>();
-        if (showCurrent)
-        {
-            lines.Add("Current");
-            lines.AddRange(FormatUpgradeNeedLines(currentNeeds));
-        }
-
-        if (showFuture)
-        {
-            lines.Add("Future");
-            lines.AddRange(FormatUpgradeNeedLines(futureNeeds));
-        }
-
-        return string.Join("\n", lines);
-    }
-
-    private static IEnumerable<string> FormatUpgradeNeedLines(IEnumerable<UpgradeItemNeed> needs)
-    {
-        return needs.Select(need =>
-            $"{need.AreaName} {need.StageName}: {need.OwnedCount}/{need.NeededCount}");
+        _upgradeItemNeedsDirty = true;
+        _upgradeItemNeedsRefreshAt = Time.realtimeSinceStartup + 0.25f;
     }
 
     private static void OnUpgradeMarkerColorChanged(object sender, EventArgs eventArgs)
     {
         DestroyUpgradeMarkerSprites();
         RefreshRaidItemMarkers();
-        RefreshInspectedItemRequirementLabels();
     }
 
     private static void OnUpgradeMarkerVisibilityChanged(object sender, EventArgs eventArgs)
     {
         RefreshRaidItemMarkers();
-        RefreshInspectedItemRequirementLabels();
     }
 
-    private static void RefreshInspectedItemRequirementLabels()
+    private static void OnFavoriteProductionSchemesChanged()
     {
-        FieldInfo itemField = AccessTools.Field(typeof(InfoWindow), "_item");
-        foreach (InfoWindow infoWindow in OpenItemInfoWindows.ToArray())
-        {
-            if (infoWindow == null)
-            {
-                OpenItemInfoWindows.Remove(infoWindow);
-                continue;
-            }
-
-            if (!_showUpgradeItemTooltipsOnInspect.Value)
-            {
-                RemoveInspectedItemRequirementLabel(infoWindow);
-                continue;
-            }
-
-            Item item = itemField?.GetValue(infoWindow) as Item;
-            AddOrUpdateInspectedItemRequirementLabel(infoWindow, item);
-        }
+        _upgradeItemNeedsDirty = true;
+        _upgradeItemNeedsRefreshAt = Time.realtimeSinceStartup + 0.1f;
     }
 
     private static void OnWorldPanelPointerEntered(AreaWorldPanel __instance)
@@ -645,6 +592,19 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         }
 
         HideoutRepresentation representation = Singleton<HideoutRepresentation>.Instance;
+        if (_hideoutRepresentationForMarkers != representation)
+        {
+            if (_hideoutRepresentationForMarkers != null)
+            {
+                _hideoutRepresentationForMarkers.OnItemsChanged -= OnHideoutItemsChanged;
+                _hideoutRepresentationForMarkers.OnItemChanged -= OnHideoutItemChanged;
+            }
+
+            _hideoutRepresentationForMarkers = representation;
+            _hideoutRepresentationForMarkers.OnItemsChanged += OnHideoutItemsChanged;
+            _hideoutRepresentationForMarkers.OnItemChanged += OnHideoutItemChanged;
+        }
+
         List<AreaData> areaDatas = representation.AreaDatas;
         if (areaDatas == null || areaDatas.Count == 0)
         {
@@ -652,7 +612,35 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         }
 
         var pendingNeeds = new List<PendingUpgradeItemNeed>();
+        var pendingFavoriteCraftNeeds = new List<PendingFavoriteCraftItemNeed>();
         var requirementsToTest = new List<Requirement>();
+        foreach (ProductionScheme scheme in representation.FavoriteProductionSchemes ??
+            Enumerable.Empty<ProductionScheme>())
+        {
+            if (scheme == null)
+            {
+                continue;
+            }
+
+            string outputName = (scheme.endProduct.ToString() + " ShortName").Localized();
+            foreach (ItemRequirement requirement in scheme.requirements?.OfType<ItemRequirement>()
+                ?? Enumerable.Empty<ItemRequirement>())
+            {
+                if (requirement == null ||
+                    string.IsNullOrEmpty(requirement.TemplateId) ||
+                    requirement.IntCount <= 0)
+                {
+                    continue;
+                }
+
+                pendingFavoriteCraftNeeds.Add(new PendingFavoriteCraftItemNeed(
+                    requirement.TemplateId,
+                    outputName,
+                    requirement));
+                requirementsToTest.Add(requirement);
+            }
+        }
+
         foreach (AreaData areaData in areaDatas)
         {
             if (areaData?.Template == null)
@@ -688,13 +676,13 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                 continue;
             }
 
-            Stage nextStage = areaData.NextStage;
-            if (nextStage == null)
+            if (areaData.CurrentLevel >= areaData.Template.MaxLevel ||
+                !TryGetNextStage(areaData, out int nextStageLevel, out Stage nextStage))
             {
                 continue;
             }
 
-            string currentStageName = $"{areaData.CurrentLevel}->{nextStage.Level}";
+            string currentStageName = $"{areaData.CurrentLevel}\u2192{nextStageLevel}";
             foreach (ItemRequirement itemRequirement in nextStage.Requirements?.OfType<ItemRequirement>()
                 ?? Enumerable.Empty<ItemRequirement>())
             {
@@ -713,7 +701,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             }
 
             foreach (KeyValuePair<int, Stage> futureStage in areaData.Template.Stages
-                .Where(stage => stage.Value != null && stage.Key > nextStage.Level)
+                .Where(stage => stage.Value != null && stage.Key > nextStageLevel)
                 .OrderBy(stage => stage.Key))
             {
                 foreach (ItemRequirement itemRequirement in futureStage.Value.Requirements?.OfType<ItemRequirement>()
@@ -723,7 +711,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                         pendingNeeds,
                         requirementsToTest,
                         areaData.Template.Name,
-                        $"{futureStage.Key - 1}->{futureStage.Key}",
+                        $"{futureStage.Key - 1}\u2192{futureStage.Key}",
                         itemRequirement,
                         true);
                 }
@@ -733,10 +721,11 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         UpdateUpgradeRequirements(requirementsToTest);
         var currentNeeds = new Dictionary<string, List<UpgradeItemNeed>>();
         var futureNeeds = new Dictionary<string, List<UpgradeItemNeed>>();
+        var favoriteCraftNeeds = new Dictionary<string, List<FavoriteCraftItemNeed>>();
         foreach (PendingUpgradeItemNeed pendingNeed in pendingNeeds)
         {
             int neededCount = pendingNeed.Requirement.IntCount;
-            int ownedCount = Mathf.Clamp(pendingNeed.Requirement.UserItemsCount, 0, neededCount);
+            int ownedCount = Mathf.Max(0, pendingNeed.Requirement.UserItemsCount);
 
             Dictionary<string, List<UpgradeItemNeed>> destination =
                 pendingNeed.IsFuture ? futureNeeds : currentNeeds;
@@ -767,12 +756,31 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             }
         }
 
-        RemoveSatisfiedUpgradeNeeds(currentNeeds);
-        RemoveSatisfiedUpgradeNeeds(futureNeeds);
+        foreach (PendingFavoriteCraftItemNeed pendingNeed in pendingFavoriteCraftNeeds)
+        {
+            if (!favoriteCraftNeeds.TryGetValue(pendingNeed.TemplateId, out List<FavoriteCraftItemNeed> itemNeeds))
+            {
+                itemNeeds = new List<FavoriteCraftItemNeed>();
+                favoriteCraftNeeds.Add(pendingNeed.TemplateId, itemNeeds);
+            }
+
+            itemNeeds.Add(new FavoriteCraftItemNeed(
+                pendingNeed.OutputName,
+                Mathf.Max(0, pendingNeed.Requirement.UserItemsCount),
+                pendingNeed.Requirement.IntCount));
+        }
+
         CurrentUpgradeItemNeeds.Clear();
         FutureUpgradeItemNeeds.Clear();
+        FavoriteCraftItemNeeds.Clear();
         CopyUpgradeNeeds(currentNeeds, CurrentUpgradeItemNeeds);
         CopyUpgradeNeeds(futureNeeds, FutureUpgradeItemNeeds);
+        foreach (KeyValuePair<string, List<FavoriteCraftItemNeed>> entry in favoriteCraftNeeds)
+        {
+            FavoriteCraftItemNeeds.Add(entry.Key, entry.Value);
+        }
+        _hasLoadedUpgradeItemNeeds = true;
+        _upgradeItemNeedsDirty = false;
     }
 
     private static void AddPendingUpgradeItemNeed(
@@ -807,25 +815,22 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         }
     }
 
-    private static void RemoveSatisfiedUpgradeNeeds(IDictionary<string, List<UpgradeItemNeed>> needs)
+    private static bool TryGetNextStage(AreaData areaData, out int nextStageLevel, out Stage nextStage)
     {
-        foreach (string templateId in needs.Keys.ToArray())
+        nextStageLevel = 0;
+        nextStage = null;
+        if (areaData?.Template?.Stages == null)
         {
-            needs[templateId].RemoveAll(need => need.OwnedCount >= need.NeededCount);
-            if (needs[templateId].Count == 0)
-            {
-                needs.Remove(templateId);
-            }
+            return false;
         }
+
+        nextStageLevel = areaData.CurrentLevel + 1;
+        return areaData.Template.Stages.TryGetValue(nextStageLevel, out nextStage) &&
+            nextStage != null;
     }
 
     private static void RefreshRaidItemMarkers()
     {
-        foreach (GridItemView itemView in UnityEngine.Object.FindObjectsOfType<GridItemView>())
-        {
-            RaidItemViews.Add(itemView);
-        }
-
         GridItemView[] itemViews = RaidItemViews.ToArray();
         foreach (GridItemView itemView in itemViews)
         {
@@ -860,10 +865,14 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             _showFutureUpgradeItemMarkers.Value &&
             !string.IsNullOrEmpty(templateId) &&
             FutureUpgradeItemNeeds.ContainsKey(templateId);
+        bool needsFavoriteCraft = showMarkerInCurrentContext &&
+            _showFavoriteCraftItemMarkers.Value &&
+            !string.IsNullOrEmpty(templateId) &&
+            FavoriteCraftItemNeeds.ContainsKey(templateId);
 
         if (!RaidItemMarkers.TryGetValue(itemView, out Image markerImage) || markerImage == null)
         {
-            if (!needsCurrent && !needsFuture)
+            if (!needsCurrent && !needsFuture && !needsFavoriteCraft)
             {
                 return;
             }
@@ -877,10 +886,16 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             RaidItemMarkers[itemView] = markerImage;
         }
 
-        markerImage.enabled = showMarkerInCurrentContext && (needsCurrent || needsFuture);
+        markerImage.enabled = showMarkerInCurrentContext && (needsCurrent || needsFuture || needsFavoriteCraft);
+        if (!markerImage.enabled && _hoveredRaidItemView == itemView)
+        {
+            _hoveredRaidItemView = null;
+            _raidItemTooltipTemplateId = null;
+        }
+
         if (markerImage.enabled)
         {
-            markerImage.sprite = GetUpgradeMarkerSprite(needsCurrent, needsFuture);
+            markerImage.sprite = GetUpgradeMarkerSprite(needsCurrent, needsFuture, needsFavoriteCraft);
         }
     }
 
@@ -908,33 +923,46 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         markerRect.SetAsLastSibling();
 
         Image markerImage = markerObject.GetComponent<Image>();
-        markerImage.raycastTarget = false;
+        markerImage.raycastTarget = true;
         markerImage.enabled = false;
+
+        markerObject.AddComponent<UpgradeMarkerHoverHandler>().Initialize(itemView);
+
         return markerImage;
     }
 
-    private static Sprite GetUpgradeMarkerSprite(bool needsCurrent, bool needsFuture)
+    private static Sprite GetUpgradeMarkerSprite(bool needsCurrent, bool needsFuture, bool needsFavoriteCraft)
     {
-        if (needsCurrent && needsFuture)
+        int markerFlags = (needsCurrent ? 1 : 0) |
+            (needsFuture ? 2 : 0) |
+            (needsFavoriteCraft ? 4 : 0);
+        if (UpgradeMarkerSprites.TryGetValue(markerFlags, out Sprite sprite) && sprite != null)
         {
-            return _combinedUpgradeMarkerSprite ?? (_combinedUpgradeMarkerSprite = CreateUpgradeMarkerSprite(
-                _currentUpgradeItemMarkerColor.Value,
-                _futureUpgradeItemMarkerColor.Value));
+            return sprite;
         }
 
+        var colors = new List<Color>();
         if (needsCurrent)
         {
-            return _currentUpgradeMarkerSprite ?? (_currentUpgradeMarkerSprite = CreateUpgradeMarkerSprite(
-                _currentUpgradeItemMarkerColor.Value,
-                _currentUpgradeItemMarkerColor.Value));
+            colors.Add(_currentUpgradeItemMarkerColor.Value);
         }
 
-        return _futureUpgradeMarkerSprite ?? (_futureUpgradeMarkerSprite = CreateUpgradeMarkerSprite(
-            _futureUpgradeItemMarkerColor.Value,
-            _futureUpgradeItemMarkerColor.Value));
+        if (needsFuture)
+        {
+            colors.Add(_futureUpgradeItemMarkerColor.Value);
+        }
+
+        if (needsFavoriteCraft)
+        {
+            colors.Add(_favoriteCraftItemMarkerColor.Value);
+        }
+
+        sprite = CreateUpgradeMarkerSprite(colors);
+        UpgradeMarkerSprites[markerFlags] = sprite;
+        return sprite;
     }
 
-    private static Sprite CreateUpgradeMarkerSprite(Color leftColor, Color rightColor)
+    private static Sprite CreateUpgradeMarkerSprite(IList<Color> colors)
     {
         const int size = 24;
         var texture = new Texture2D(size, size, TextureFormat.RGBA32, false)
@@ -966,9 +994,10 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                     }
                 }
 
+                int colorIndex = Mathf.Min(x * colors.Count / size, colors.Count - 1);
                 pixels[y * size + x] = isOutline
                     ? new Color32(12, 16, 20, 255)
-                    : (Color32)(x < size / 2 ? leftColor : rightColor);
+                    : (Color32)colors[colorIndex];
             }
         }
 
@@ -1005,9 +1034,20 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
         CurrentUpgradeItemNeeds.TryGetValue(templateId, out List<UpgradeItemNeed> currentNeeds);
         FutureUpgradeItemNeeds.TryGetValue(templateId, out List<UpgradeItemNeed> futureNeeds);
-        bool showCurrent = _showCurrentUpgradeItemMarkers.Value && currentNeeds != null;
-        bool showFuture = _showFutureUpgradeItemMarkers.Value && futureNeeds != null;
-        if (!showCurrent && !showFuture)
+        FavoriteCraftItemNeeds.TryGetValue(templateId, out List<FavoriteCraftItemNeed> favoriteCraftNeeds);
+        List<string> currentLines = _showCurrentUpgradeItemMarkers.Value && currentNeeds != null
+            ? currentNeeds.Select(FormatUpgradeItemNeed).ToList()
+            : null;
+        List<string> futureLines = _showFutureUpgradeItemMarkers.Value && futureNeeds != null
+            ? futureNeeds.Select(FormatUpgradeItemNeed).ToList()
+            : null;
+        List<string> favoriteCraftLines = _showFavoriteCraftItemMarkers.Value && favoriteCraftNeeds != null
+            ? favoriteCraftNeeds.Select(FormatFavoriteCraftItemNeed).ToList()
+            : null;
+        bool showCurrent = currentLines?.Count > 0;
+        bool showFuture = futureLines?.Count > 0;
+        bool showFavoriteCraft = favoriteCraftLines?.Count > 0;
+        if (!showCurrent && !showFuture && !showFavoriteCraft)
         {
             _raidItemTooltipTemplateId = null;
             _raidItemTooltipScrollPosition = Vector2.zero;
@@ -1015,137 +1055,294 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         }
 
         EnsureTooltipStyles();
-        const float padding = 9f;
-        const float lineHeight = 24f;
-        const float headerHeight = 26f;
-        const float sectionGap = 5f;
+        const float padding = 4f;
+        const float sectionGap = 8f;
+        const float rowGap = 2f;
+        const float dividerHeight = 2f;
+        const float bottomSectionPadding = 4f;
+        const float iconSize = 20f;
+        const float iconTextGap = 4f;
+        float iconColumnWidth = iconSize + iconTextGap;
         if (_raidItemTooltipTemplateId != templateId)
         {
             _raidItemTooltipTemplateId = templateId;
             _raidItemTooltipScrollPosition = Vector2.zero;
         }
 
-        int sectionCount = (showCurrent ? 1 : 0) + (showFuture ? 1 : 0);
-        int lineCount = (showCurrent ? currentNeeds.Count : 0) + (showFuture ? futureNeeds.Count : 0);
-        float height = padding * 2f + headerHeight * sectionCount +
-            lineHeight * lineCount + sectionGap * (sectionCount - 1);
-        float widestLine = 0f;
+        float contentWidth = 0f;
+        float contentHeight = 0f;
         if (showCurrent)
         {
-            widestLine = Mathf.Max(widestLine, MeasureUpgradeNeedWidth(currentNeeds));
+            contentWidth = MeasureTooltipSectionWidth(currentLines, iconSize, iconTextGap);
         }
 
         if (showFuture)
         {
-            widestLine = Mathf.Max(widestLine, MeasureUpgradeNeedWidth(futureNeeds));
+            contentWidth = Mathf.Max(contentWidth, MeasureTooltipSectionWidth(futureLines, iconSize, iconTextGap));
         }
 
-        float width = Mathf.Min(
-            Mathf.Max(300f, widestLine + padding * 2f),
-            Mathf.Max(220f, Screen.width - 20f));
-        float visibleHeight = Mathf.Min(height, Mathf.Max(100f, Screen.height - 20f));
+        if (showFavoriteCraft)
+        {
+            contentWidth = Mathf.Max(
+                contentWidth,
+                MeasureTooltipSectionWidth(favoriteCraftLines, iconSize, iconTextGap));
+        }
+
+        float maxContentWidth = Mathf.Max(1f, Screen.width - padding * 2f - 20f);
+        contentWidth = Mathf.Min(
+            contentWidth,
+            maxContentWidth);
+
+        if (showCurrent)
+        {
+            contentHeight += MeasureTooltipSectionHeight(
+                currentLines,
+                iconSize,
+                iconColumnWidth,
+                contentWidth,
+                rowGap);
+        }
+
+        if (showFuture)
+        {
+            contentHeight += MeasureTooltipSectionHeight(
+                futureLines,
+                iconSize,
+                iconColumnWidth,
+                contentWidth,
+                rowGap);
+        }
+
+        if (showFavoriteCraft)
+        {
+            contentHeight += MeasureTooltipSectionHeight(
+                favoriteCraftLines,
+                iconSize,
+                iconColumnWidth,
+                contentWidth,
+                rowGap);
+        }
+
+        int sectionCount = (showCurrent ? 1 : 0) +
+            (showFuture ? 1 : 0) +
+            (showFavoriteCraft ? 1 : 0);
+        contentHeight += Mathf.Max(0, sectionCount - 1) * (sectionGap * 2f + dividerHeight);
+        contentHeight += bottomSectionPadding;
+
+        float width = Mathf.Min(contentWidth + padding * 2f, Mathf.Max(1f, Screen.width - 20f));
+        float height = contentHeight + padding * 2f;
+        float visibleHeight = Mathf.Min(height, Mathf.Max(80f, Screen.height - 20f));
         Vector2 mousePosition = Input.mousePosition;
         float left = Mathf.Clamp(mousePosition.x + 18f, 0f, Screen.width - width);
         float top = Mathf.Clamp(Screen.height - mousePosition.y + 18f, 0f, Screen.height - visibleHeight);
         var viewport = new Rect(left, top, width, visibleHeight);
-        GUI.Box(viewport, GUIContent.none);
+        DrawUpgradeTooltipBackground(viewport);
         _raidItemTooltipScrollPosition = GUI.BeginScrollView(
             viewport,
             _raidItemTooltipScrollPosition,
             new Rect(0f, 0f, width, height));
 
         float currentY = padding;
+        bool hasPreviousSection = false;
         if (showCurrent)
         {
-            DrawUpgradeNeedSection(
-                padding,
-                width - padding * 2f,
-                "Current",
-                currentNeeds,
-                ref currentY,
-                headerHeight,
-                lineHeight);
-        }
+            if (hasPreviousSection)
+            {
+                currentY = DrawUpgradeTooltipDivider(padding, currentY, contentWidth, sectionGap, dividerHeight);
+            }
 
-        if (showCurrent && showFuture)
-        {
-            currentY += sectionGap;
+            currentY += DrawUpgradeNeedSection(
+                padding,
+                currentY,
+                contentWidth,
+                GetUpgradeMarkerSprite(true, false, false),
+                currentLines,
+                iconSize,
+                iconColumnWidth,
+                rowGap);
+            hasPreviousSection = true;
         }
 
         if (showFuture)
         {
-            DrawUpgradeNeedSection(
+            if (hasPreviousSection)
+            {
+                currentY = DrawUpgradeTooltipDivider(padding, currentY, contentWidth, sectionGap, dividerHeight);
+            }
+
+            currentY += DrawUpgradeNeedSection(
                 padding,
-                width - padding * 2f,
-                "Future",
-                futureNeeds,
-                ref currentY,
-                headerHeight,
-                lineHeight);
+                currentY,
+                contentWidth,
+                GetUpgradeMarkerSprite(false, true, false),
+                futureLines,
+                iconSize,
+                iconColumnWidth,
+                rowGap);
+            hasPreviousSection = true;
+        }
+
+        if (showFavoriteCraft)
+        {
+            if (hasPreviousSection)
+            {
+                currentY = DrawUpgradeTooltipDivider(padding, currentY, contentWidth, sectionGap, dividerHeight);
+            }
+
+            currentY += DrawUpgradeNeedSection(
+                padding,
+                currentY,
+                contentWidth,
+                GetUpgradeMarkerSprite(false, false, true),
+                favoriteCraftLines,
+                iconSize,
+                iconColumnWidth,
+                rowGap);
         }
 
         GUI.EndScrollView();
+        DrawUpgradeTooltipBorder(viewport);
     }
 
-    private static float MeasureUpgradeNeedWidth(IEnumerable<UpgradeItemNeed> needs)
+    private static void DrawUpgradeTooltipBackground(Rect rect)
+    {
+        Color previousColor = GUI.color;
+        GUI.color = Color.black;
+        GUI.DrawTexture(rect, Texture2D.whiteTexture);
+        GUI.color = previousColor;
+    }
+
+    private static void DrawUpgradeTooltipBorder(Rect rect)
+    {
+        for (int offset = 5; offset >= 1; offset--)
+        {
+            float alpha = (6f - offset) * 0.07f;
+            DrawBorder(
+                new Rect(
+                    rect.x - offset,
+                    rect.y - offset,
+                    rect.width + offset * 2f,
+                    rect.height + offset * 2f),
+                new Color(0f, 0f, 0f, alpha),
+                1f);
+        }
+
+        DrawBorder(rect, Color.white, 1f);
+    }
+
+    private static float MeasureTooltipSectionWidth(
+        IList<string> lines,
+        float iconSize,
+        float iconTextGap)
     {
         float width = 0f;
-        foreach (UpgradeItemNeed need in needs)
+        for (int i = 0; i < lines.Count; i++)
         {
-            string line = $"{need.AreaName} {need.StageName}: {need.OwnedCount}/{need.NeededCount}";
-            width = Mathf.Max(width, _tooltipBodyStyle.CalcSize(new GUIContent(line)).x);
+            float lineWidth = _raidItemTooltipBodyStyle.CalcSize(new GUIContent(lines[i])).x +
+                iconSize + iconTextGap;
+            width = Mathf.Max(width, lineWidth);
         }
 
         return width;
     }
 
-    private static void DrawUpgradeNeedSection(
-        float left,
-        float width,
-        string heading,
-        IList<UpgradeItemNeed> needs,
-        ref float currentY,
-        float headerHeight,
-        float lineHeight)
+    private static float MeasureTooltipSectionHeight(
+        IList<string> lines,
+        float iconSize,
+        float iconColumnWidth,
+        float sectionWidth,
+        float rowGap)
     {
-        DrawOutlinedLabel(
-            new Rect(left, currentY, width, headerHeight),
-            heading,
-            _tooltipSectionStyle);
-        currentY += headerHeight;
-        foreach (UpgradeItemNeed need in needs)
+        float textWidth = Mathf.Max(1f, sectionWidth - iconColumnWidth);
+        float textHeight = 0f;
+        for (int i = 0; i < lines.Count; i++)
         {
-            string line = $"{need.AreaName} {need.StageName}: {need.OwnedCount}/{need.NeededCount}";
+            if (i > 0)
+            {
+                textHeight += rowGap;
+            }
+
+            textHeight += _raidItemTooltipBodyStyle.CalcHeight(
+                new GUIContent(lines[i]),
+                textWidth);
+        }
+
+        return Mathf.Max(iconSize, textHeight);
+    }
+
+    private static float DrawUpgradeNeedSection(
+        float left,
+        float top,
+        float width,
+        Sprite markerSprite,
+        IList<string> lines,
+        float iconSize,
+        float iconColumnWidth,
+        float rowGap)
+    {
+        float textWidth = Mathf.Max(1f, width - iconColumnWidth);
+        float currentY = top;
+        Rect iconRect = new Rect(left, currentY, iconSize, iconSize);
+        if (markerSprite != null)
+        {
+            GUI.DrawTexture(iconRect, markerSprite.texture, ScaleMode.ScaleToFit, true);
+        }
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (i > 0)
+            {
+                currentY += rowGap;
+            }
+
+            string line = lines[i];
+            float lineHeight = _raidItemTooltipBodyStyle.CalcHeight(new GUIContent(line), textWidth);
             DrawOutlinedLabel(
-                new Rect(left, currentY, width, lineHeight),
+                new Rect(left + iconColumnWidth, currentY, textWidth, lineHeight),
                 line,
-                _tooltipBodyStyle);
+                _raidItemTooltipBodyStyle);
             currentY += lineHeight;
         }
+
+        return Mathf.Max(iconSize, currentY - top);
+    }
+
+    private static string FormatUpgradeItemNeed(UpgradeItemNeed need)
+    {
+        return $"{need.AreaName} {need.StageName}: {need.OwnedCount}/{need.NeededCount}";
+    }
+
+    private static string FormatFavoriteCraftItemNeed(FavoriteCraftItemNeed need)
+    {
+        return $"{need.OutputName}: {need.OwnedCount}/{need.NeededCount}";
+    }
+
+    private static float DrawUpgradeTooltipDivider(float left, float top, float width, float gap, float dividerHeight)
+    {
+        float dividerY = top + gap;
+        DrawBorder(
+            new Rect(left, dividerY, width, dividerHeight),
+            new Color(0.7f, 0.7f, 0.7f, 0.9f),
+            dividerHeight);
+        return dividerY + dividerHeight + gap;
     }
 
     private static void DestroyUpgradeMarkerSprites()
     {
-        DestroyUpgradeMarkerSprite(ref _currentUpgradeMarkerSprite);
-        DestroyUpgradeMarkerSprite(ref _futureUpgradeMarkerSprite);
-        DestroyUpgradeMarkerSprite(ref _combinedUpgradeMarkerSprite);
-    }
-
-    private static void DestroyUpgradeMarkerSprite(ref Sprite sprite)
-    {
-        if (sprite == null)
+        foreach (Sprite sprite in UpgradeMarkerSprites.Values)
         {
-            return;
+            if (sprite != null)
+            {
+                Texture texture = sprite.texture;
+                UnityEngine.Object.Destroy(sprite);
+                if (texture != null)
+                {
+                    UnityEngine.Object.Destroy(texture);
+                }
+            }
         }
 
-        Texture texture = sprite.texture;
-        UnityEngine.Object.Destroy(sprite);
-        if (texture != null)
-        {
-            UnityEngine.Object.Destroy(texture);
-        }
-
-        sprite = null;
+        UpgradeMarkerSprites.Clear();
     }
 
     private static void DrawWorldPanelTooltip()
@@ -1167,15 +1364,18 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             }
             else
             {
-                upgradeRequirements.AddRange(areaData.NextStage.Requirements?
-                    .Where(requirement =>
-                        requirement is ItemRequirement ||
-                        requirement is AreaRequirement ||
-                        requirement is TraderLoyaltyRequirement ||
-                        requirement is TraderUnlockRequirement)
-                    .Where(requirement => requirement is not AreaRequirement areaRequirement ||
-                        areaRequirement.AreaType != areaData.Template.Type)
-                    ?? Enumerable.Empty<Requirement>());
+                if (TryGetNextStage(areaData, out _, out Stage nextStage))
+                {
+                    upgradeRequirements.AddRange(nextStage.Requirements?
+                        .Where(requirement =>
+                            requirement is ItemRequirement ||
+                            requirement is AreaRequirement ||
+                            requirement is TraderLoyaltyRequirement ||
+                            requirement is TraderUnlockRequirement)
+                        .Where(requirement => requirement is not AreaRequirement areaRequirement ||
+                            areaRequirement.AreaType != areaData.Template.Type)
+                        ?? Enumerable.Empty<Requirement>());
+                }
             }
         }
 
@@ -1661,9 +1861,14 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private static string GetUpgradeHeading(AreaData areaData)
     {
-        return areaData.CurrentLevel <= 0
-            ? "Construction Requirements"
-            : $"Level {areaData.NextStage.Level} Upgrade Requirements";
+        if (areaData.CurrentLevel <= 0)
+        {
+            return "Construction Requirements";
+        }
+
+        return TryGetNextStage(areaData, out int nextStageLevel, out _)
+            ? $"Level {nextStageLevel} Upgrade Requirements"
+            : "Upgrade Requirements";
     }
 
     private static DefectiveWallRequirements GetDefectiveWallRequirements(AreaData areaData)
@@ -1892,6 +2097,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
         _tooltipSectionStyle = CreateTooltipStyle(21, TextAnchor.MiddleLeft);
         _tooltipBodyStyle = CreateTooltipStyle(15, TextAnchor.MiddleCenter);
+        _raidItemTooltipBodyStyle = CreateTooltipStyle(18, TextAnchor.MiddleLeft);
         _tooltipCountStyle = CreateTooltipStyle(21, TextAnchor.MiddleCenter);
         _tooltipTimerStyle = CreateTooltipStyle(20, TextAnchor.MiddleCenter);
         _tooltipProgressStyle = CreateTooltipStyle(25, TextAnchor.MiddleCenter);

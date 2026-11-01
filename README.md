@@ -8,7 +8,8 @@ Small quality-of-life improvements for the SPT 4.1.6 hideout. Client-side, and F
 - See active crafts and their remaining time, or **Completed** when an item is ready to claim.
 - Hide the bottom scroll bar.
 - Open a station menu without zooming the camera.
-- Mark items found during raids when they are still needed for hideout upgrades. Hover over the marker to see the station, stage, and remaining quantity. Current stages use green, later stages use blue, and items needed for both use a split marker.
+- Mark items used by current and future hideout upgrade requirements. Hover over the marker to replace the normal item-name tooltip with the station, level transition, and owned/needed count. Markers remain visible even when your stash already meets a requirement, so the count can show more owned than needed. The tooltip uses the current/future marker icons to identify each section, separated by a divider. Current stages use green, later stages use blue, and items needed for both use a split marker.
+- Mark ingredients for favorited hideout crafts with a separate toggle and color. The tooltip shows each crafted output and the hovered ingredient's owned/needed count.
 
 ## Install
 
@@ -24,7 +25,7 @@ Settings are available in the BepInEx configuration file:
 
 `BepInEx\config\com.heroiclarvy.hideoutwedeserveuiimprovements.cfg`
 
-In the `Raid Item Markers` section, configure current and future upgrade markers independently, choose each marker color, and toggle marker visibility in stash, hover details, and item Inspect windows.
+In the `Item Markers` section, configure current, future, and favorited-craft ingredient markers independently, choose their colors, and toggle marker visibility in stash and hover details.
 
 ## License
 
