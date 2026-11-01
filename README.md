@@ -8,10 +8,13 @@ Small quality-of-life improvements for the SPT 4.1.6 hideout. Client-side, and F
 - See active crafts and their remaining time, or **Completed** when an item is ready to claim.
 - Hide the bottom scroll bar.
 - Open a station menu without zooming the camera.
+- Mark items found during raids when they are still needed for hideout upgrades. Hover over the marker to see the station, stage, and remaining quantity. Current stages use green, later stages use blue, and items needed for both use a split marker.
 
 ## Install
 
 Download `Hideout-We-Deserve-UI-Improvements-1.0.0.zip` from [Releases](https://github.com/HeroicLarvy/Hideout-We-Deserve-UI-Improvements/releases), then extract it into your SPT folder. The DLL is already inside `BepInEx\plugins`.
+
+The raid item markers are in development on this branch and are not included in the 1.0.0 release ZIP.
 
 For Fika, install the mod on each player's client.
 
@@ -20,6 +23,8 @@ For Fika, install the mod on each player's client.
 Settings are available in the BepInEx configuration file:
 
 `BepInEx\config\com.heroiclarvy.hideoutwedeserveuiimprovements.cfg`
+
+In the `Raid Item Markers` section, configure current and future upgrade markers independently, choose each marker color, and toggle marker visibility in stash, hover details, and item Inspect windows.
 
 ## License
 
