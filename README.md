@@ -1,36 +1,27 @@
 # Hideout We Deserve - UI Improvements
 
-Client-side hideout UI improvements for SPT 4.1.6 by **HeroicLarvy**. The plugin is designed for local client use and is compatible with Fika when installed by each player.
+Small quality-of-life improvements for the SPT 4.1.6 hideout. Client-side, and Fika compatible when installed by each player.
 
-## Features
+## What you get
 
-- Hover over hideout stations to view active/completed crafts and upgrade requirements.
-- Toggle the bottom hideout station bar, hover item names, and craft/upgrade details.
-- Open station menus without zooming the camera.
+- Hover over a hideout station to see its upgrade requirements, including item counts and the other stations or traders needed.
+- See active crafts and their remaining time, or **Completed** when an item is ready to claim.
+- View the defective wall's floor-mopping and dismantling requirements separately.
+- Hide the bottom station bar.
+- Open a station menu without zooming the camera.
+- Optionally show item names alongside their icons.
 
-## Source
+## Install
 
-This GitHub repository contains the complete C# plugin source and project file. Compiled binaries are distributed separately in the release ZIP.
+Download `Hideout-We-Deserve-UI-Improvements-1.0.0.zip` from [Releases](https://github.com/HeroicLarvy/Hideout-We-Deserve-UI-Improvements/releases), then extract it into your SPT folder. The DLL is already inside `BepInEx\plugins`.
 
-Build with the .NET 8 SDK and your SPT installation path:
+For Fika, install the mod on each player's client.
 
-```powershell
-dotnet build HideoutWeDeserveUIImprovements.csproj -c Release -p:SPTPath="D:\Random Games\SPT"
-```
+## Settings
 
-The generated DLL is written to `bin\Release\netstandard2.1\HideoutWeDeserveUIImprovements.dll`.
+Settings are available in the BepInEx configuration file:
 
-## Install a release
-
-Download `Hideout We Deserve - UI Improvements.zip` and extract it into the SPT installation folder. The archive already contains the `BepInEx\plugins\HideoutWeDeserveUIImprovements.dll` path.
-
-## Configuration
-
-The plugin settings are created in:
-
-```text
-BepInEx\config\com.heroiclarvy.hideoutwedeserveuiimprovements.cfg
-```
+`BepInEx\config\com.heroiclarvy.hideoutwedeserveuiimprovements.cfg`
 
 ## License
 
