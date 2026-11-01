@@ -6,10 +6,8 @@ Small quality-of-life improvements for the SPT 4.1.6 hideout. Client-side, and F
 
 - Hover over a hideout station to see its upgrade requirements, including item counts and the other stations or traders needed.
 - See active crafts and their remaining time, or **Completed** when an item is ready to claim.
-- View the defective wall's floor-mopping and dismantling requirements separately.
-- Hide the bottom station bar.
+- Hide the bottom scroll bar.
 - Open a station menu without zooming the camera.
-- Optionally show item names alongside their icons.
 
 ## Install
 
