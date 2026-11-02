@@ -386,17 +386,8 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             AccessTools.Method(typeof(AreaWorldPanel), nameof(AreaWorldPanel.OnPointerClick)),
             prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnWorldPanelPointerClicked)));
         _harmony.Patch(
-            AccessTools.Method(typeof(ItemView), nameof(ItemView.NewItemView)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemViewInitialized)));
-        _harmony.Patch(
-            AccessTools.Method(typeof(ItemView), nameof(ItemView.RegisterItemView)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemViewInitialized)));
-        _harmony.Patch(
-            AccessTools.PropertySetter(typeof(ItemView), nameof(ItemView.Item)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemViewItemChanged)));
-        _harmony.Patch(
-            AccessTools.PropertySetter(typeof(ItemView), nameof(ItemView.IsSearched)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemViewSearchStateChanged)));
+            AccessTools.Method(typeof(GridItemView), nameof(GridItemView.NewGridItemView)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemViewCreated)));
         PatchGridItemLifecycle("EFT.IRefreshHandler.OnRefreshItem", nameof(OnRaidItemViewRefreshed));
         PatchGridItemLifecycle("EFT.IAddHandler.OnItemAdded", nameof(OnRaidItemViewRefreshed));
         PatchGridItemLifecycle("EFT.IRemoveHandler.OnItemRemoved", nameof(OnRaidItemViewUnbound));
@@ -407,17 +398,8 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         PatchQuickSlotItemViewLifecycle("EFT.IRemoveHandler.OnItemRemoved", nameof(OnRaidItemViewUnbound));
         PatchQuickSlotItemViewLifecycle("RegisterItemView", nameof(OnItemViewInitialized));
         _harmony.Patch(
-            AccessTools.Method(typeof(ItemView), nameof(ItemView.RefreshIcon)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnItemViewInitialized)));
-        _harmony.Patch(
-            AccessTools.Method(typeof(GridView), "AddItemView"),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidGridItemViewAdded)));
-        _harmony.Patch(
             AccessTools.Method(typeof(SlotView), "CreateItemView"),
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidSlotItemViewCreated)));
-        _harmony.Patch(
-            AccessTools.Method(typeof(SearchableSlotView), "ShowContent"),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnSearchableSlotContentShown)));
         _harmony.Patch(
             AccessTools.Method(typeof(GridItemView), nameof(GridItemView.ShowTooltip)),
             prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(ShouldShowDefaultItemTooltip)));
@@ -550,19 +532,13 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         RefreshRaidItemMarkers();
     }
 
+    private static void OnRaidItemViewCreated(GridItemView __result)
+    {
+        EnsureUpgradeItemNeedsLoaded();
+        RefreshRaidItemMarker(__result);
+    }
+
     private static void OnItemViewInitialized(ItemView __instance)
-    {
-        EnsureUpgradeItemNeedsLoaded();
-        RefreshRaidItemMarker(__instance);
-    }
-
-    private static void OnItemViewItemChanged(ItemView __instance)
-    {
-        EnsureUpgradeItemNeedsLoaded();
-        RefreshRaidItemMarker(__instance);
-    }
-
-    private static void OnItemViewSearchStateChanged(ItemView __instance)
     {
         EnsureUpgradeItemNeedsLoaded();
         RefreshRaidItemMarker(__instance);
@@ -574,35 +550,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         RefreshRaidItemMarker(__instance);
     }
 
-    private static void OnRaidGridItemViewAdded(GridView __instance, ItemView __0)
-    {
-        if (__instance == null || __0 == null)
-        {
-            return;
-        }
-
-        EnsureUpgradeItemNeedsLoaded();
-        RefreshRaidItemMarker(__0);
-    }
-
     private static void OnRaidSlotItemViewCreated(SlotView __instance)
-    {
-        if (__instance == null)
-        {
-            return;
-        }
-
-        ItemView itemView = __instance.GetComponentInChildren<ItemView>(true);
-        if (itemView == null)
-        {
-            return;
-        }
-
-        EnsureUpgradeItemNeedsLoaded();
-        RefreshRaidItemMarker(itemView);
-    }
-
-    private static void OnSearchableSlotContentShown(SearchableSlotView __instance)
     {
         if (__instance == null)
         {
@@ -1094,6 +1042,12 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             markerHandler.Initialize(itemView);
         }
 
+        Transform markerParent = GetRaidItemMarkerParent(itemView);
+        if (markerHandler.transform.parent != markerParent)
+        {
+            markerHandler.transform.SetParent(markerParent, false);
+        }
+
         Image markerImage = markerHandler.MarkerImage;
         if (markerImage == null)
         {
@@ -1111,6 +1065,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         if (markerImage.enabled)
         {
             ConfigureRaidItemMarkerCorner(markerImage.rectTransform);
+            markerImage.transform.SetAsLastSibling();
             markerImage.sprite = GetUpgradeMarkerSprite(needsCurrent, needsFuture, needsFavoriteCraft);
         }
     }
@@ -1138,11 +1093,22 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private static UpgradeMarkerHoverHandler FindRaidItemMarker(ItemView itemView)
     {
-        Transform itemTransform = itemView.transform;
-        for (int i = 0; i < itemTransform.childCount; i++)
+        Transform markerParent = GetRaidItemMarkerParent(itemView);
+        UpgradeMarkerHoverHandler markerHandler = FindRaidItemMarker(markerParent);
+        if (markerHandler != null || markerParent == itemView.transform)
+        {
+            return markerHandler;
+        }
+
+        return FindRaidItemMarker(itemView.transform);
+    }
+
+    private static UpgradeMarkerHoverHandler FindRaidItemMarker(Transform parent)
+    {
+        for (int i = 0; i < parent.childCount; i++)
         {
             UpgradeMarkerHoverHandler markerHandler =
-                itemTransform.GetChild(i).GetComponent<UpgradeMarkerHoverHandler>();
+                parent.GetChild(i).GetComponent<UpgradeMarkerHoverHandler>();
             if (markerHandler != null)
             {
                 return markerHandler;
@@ -1152,6 +1118,11 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         return null;
     }
 
+    private static Transform GetRaidItemMarkerParent(ItemView itemView)
+    {
+        return itemView.MainImage != null ? itemView.MainImage.transform : itemView.transform;
+    }
+
     private static UpgradeMarkerHoverHandler CreateRaidItemMarker(ItemView itemView)
     {
         var markerObject = new GameObject(
@@ -1159,7 +1130,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             typeof(RectTransform),
             typeof(CanvasRenderer),
             typeof(Image));
-        markerObject.transform.SetParent(itemView.transform, false);
+        markerObject.transform.SetParent(GetRaidItemMarkerParent(itemView), false);
 
         RectTransform markerRect = markerObject.GetComponent<RectTransform>();
         markerRect.anchorMin = new Vector2(0f, 1f);
