@@ -10,6 +10,8 @@ Small quality-of-life improvements for the SPT 4.1.6 hideout. Client-side, and F
 - Open a station menu without zooming the camera.
 - Mark items used by current and future hideout upgrade requirements. Hover over the marker to replace the normal item-name tooltip with the station, level transition, and owned/needed count. Markers remain visible even when your stash already meets a requirement, so the count can show more owned than needed. The tooltip uses the current/future marker icons to identify each section, separated by a divider. Current stages use green, later stages use blue, and items needed for both use a split marker.
 - Mark ingredients for favorited hideout crafts with a separate toggle and color. The tooltip shows each crafted output and the hovered ingredient's owned/needed count.
+- Optionally include roubles, dollars, and euros in hideout and favorite-craft markers. Currency is excluded by default; enable the master setting and the individual currency toggles to show markers when a currency is needed. Choose any item-icon corner for markers; bottom-left is the default.
+- Markers follow items across grid, equipment-slot, and quick-slot inventory views, and appear as items are revealed while searching containers.
 
 ## Install
 
@@ -25,7 +27,7 @@ Settings are available in the BepInEx configuration file:
 
 `BepInEx\config\com.heroiclarvy.hideoutwedeserveuiimprovements.cfg`
 
-In the `Item Markers` section, configure current, future, and favorited-craft ingredient markers independently, choose their colors, and toggle marker visibility in stash and hover details.
+In the `Item Markers` section, configure current, future, and favorited-craft ingredient markers independently and choose their colors and corner. The currency master toggle is followed by the rouble, dollar, and euro options. Currency is excluded by default.
 
 ## License
 
