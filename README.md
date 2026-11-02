@@ -1,6 +1,6 @@
 # Hideout We Deserve - UI Improvements
 
-Small quality-of-life improvements for the SPT 4.1.6 hideout. Requires Tyfon UI Fixes, is client-side, and is Fika compatible when installed by each player.
+Small quality-of-life improvements for the SPT 4.1.6 hideout. Client-side, and Fika compatible when installed by each player. Tyfon UI Fixes is supported but not required.
 
 ## What you get
 
@@ -17,7 +17,7 @@ Small quality-of-life improvements for the SPT 4.1.6 hideout. Requires Tyfon UI 
 
 Download `Hideout-We-Deserve-UI-Improvements-1.0.0.zip` from [Releases](https://github.com/HeroicLarvy/Hideout-We-Deserve-UI-Improvements/releases), then extract it into your SPT folder. The DLL is already inside `BepInEx\plugins`.
 
-Install a version of Tyfon UI Fixes compatible with SPT 4.1.6 before launching; this mod will not load without it.
+Tyfon UI Fixes is optional. This mod does not require it to load.
 
 The raid item markers are in development on this branch and are not included in the 1.0.0 release ZIP.
 

@@ -23,7 +23,6 @@ public sealed class ConfigurationManagerAttributes
 }
 
 [BepInPlugin(PluginId, PluginName, PluginVersion)]
-[BepInDependency("com.tyfon.uifixes")]
 public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 {
     private enum ItemMarkerCorner
