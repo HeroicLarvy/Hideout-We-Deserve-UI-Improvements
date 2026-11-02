@@ -23,6 +23,7 @@ public sealed class ConfigurationManagerAttributes
 }
 
 [BepInPlugin(PluginId, PluginName, PluginVersion)]
+[BepInDependency("com.tyfon.uifixes")]
 public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 {
     private enum ItemMarkerCorner
@@ -39,6 +40,9 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     private const float HoverItemGap = 4.5f;
     private const float HoverProgressWidth = 104f;
     private const float RaidItemMarkerSize = 18f;
+    private const string RaidItemMarkerLayerName = "HideoutUpgradeMarkerLayer";
+    private static readonly Type WishlistGridViewType =
+        AccessTools.TypeByName("UI.DragAndDrop.ItemViews.WishlistGridView");
 
     private static HideoutWeDeserveUIImprovementsPlugin _instance;
     private static ConfigEntry<bool> _hideBottomScrollbar;
@@ -152,22 +156,30 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         UnityEngine.EventSystems.IPointerExitHandler
     {
         private ItemView _itemView;
+        private bool _markerActive;
 
-        internal void Initialize(ItemView itemView)
+        internal void Initialize(ItemView itemView, bool markerActive = true)
         {
             _itemView = itemView;
+            _markerActive = markerActive;
         }
 
         internal Image MarkerImage => GetComponent<Image>();
 
         public void OnPointerEnter(UnityEngine.EventSystems.PointerEventData eventData)
         {
-            HideoutWeDeserveUIImprovementsPlugin.OnRaidItemMarkerPointerEntered(_itemView);
+            if (_markerActive)
+            {
+                HideoutWeDeserveUIImprovementsPlugin.OnRaidItemMarkerPointerEntered(_itemView);
+            }
         }
 
         public void OnPointerExit(UnityEngine.EventSystems.PointerEventData eventData)
         {
-            HideoutWeDeserveUIImprovementsPlugin.OnRaidItemMarkerPointerExited(_itemView);
+            if (_markerActive)
+            {
+                HideoutWeDeserveUIImprovementsPlugin.OnRaidItemMarkerPointerExited(_itemView);
+            }
         }
 
         private void OnDestroy()
@@ -386,8 +398,28 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             AccessTools.Method(typeof(AreaWorldPanel), nameof(AreaWorldPanel.OnPointerClick)),
             prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnWorldPanelPointerClicked)));
         _harmony.Patch(
+            AccessTools.PropertySetter(typeof(ItemView), nameof(ItemView.Item)),
+            postfix: CreateLastPostfix(nameof(OnItemViewItemChanged)));
+        _harmony.Patch(
+            AccessTools.PropertySetter(typeof(ItemView), nameof(ItemView.IsSearched)),
+            postfix: CreateLastPostfix(nameof(OnItemViewSearchStateChanged)));
+        _harmony.Patch(
             AccessTools.Method(typeof(GridItemView), nameof(GridItemView.NewGridItemView)),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemViewCreated)));
+            postfix: CreateLastPostfix(nameof(OnRaidItemViewCreated)));
+        _harmony.Patch(
+            AccessTools.Method(WishlistGridViewType, "Show"),
+            postfix: CreateLastPostfix(nameof(AfterWishlistViewShown)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(GridView), "AddItemView"),
+            postfix: CreateLastPostfix(nameof(OnRaidGridItemViewAdded)));
+        var swapEventsPostfix =
+            new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidItemSwapEventsRaised))
+            {
+                priority = Priority.Last
+            };
+        _harmony.Patch(
+            AccessTools.Method(typeof(SwapResult), nameof(SwapResult.RaiseEvents)),
+            postfix: swapEventsPostfix);
         PatchGridItemLifecycle("EFT.IRefreshHandler.OnRefreshItem", nameof(OnRaidItemViewRefreshed));
         PatchGridItemLifecycle("EFT.IAddHandler.OnItemAdded", nameof(OnRaidItemViewRefreshed));
         PatchGridItemLifecycle("EFT.IRemoveHandler.OnItemRemoved", nameof(OnRaidItemViewUnbound));
@@ -399,7 +431,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         PatchQuickSlotItemViewLifecycle("RegisterItemView", nameof(OnItemViewInitialized));
         _harmony.Patch(
             AccessTools.Method(typeof(SlotView), "CreateItemView"),
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnRaidSlotItemViewCreated)));
+            postfix: CreateLastPostfix(nameof(OnRaidSlotItemViewCreated)));
         _harmony.Patch(
             AccessTools.Method(typeof(GridItemView), nameof(GridItemView.ShowTooltip)),
             prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(ShouldShowDefaultItemTooltip)));
@@ -424,9 +456,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             return;
         }
 
-        _harmony.Patch(
-            method,
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), callbackName));
+        _harmony.Patch(method, postfix: CreateLastPostfix(callbackName));
     }
 
     private void PatchQuickSlotItemViewLifecycle(string methodName, string callbackName)
@@ -441,9 +471,15 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             return;
         }
 
-        _harmony.Patch(
-            method,
-            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), callbackName));
+        _harmony.Patch(method, postfix: CreateLastPostfix(callbackName));
+    }
+
+    private static HarmonyMethod CreateLastPostfix(string callbackName)
+    {
+        return new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), callbackName)
+        {
+            priority = Priority.Last
+        };
     }
 
     private void OnDestroy()
@@ -487,7 +523,15 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         {
             if (markerHandler != null)
             {
-                UnityEngine.Object.Destroy(markerHandler.gameObject);
+                Transform markerLayer = markerHandler.transform.parent;
+                if (markerLayer != null && markerLayer.name == RaidItemMarkerLayerName)
+                {
+                    UnityEngine.Object.Destroy(markerLayer.gameObject);
+                }
+                else
+                {
+                    UnityEngine.Object.Destroy(markerHandler);
+                }
             }
         }
 
@@ -532,10 +576,56 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         RefreshRaidItemMarkers();
     }
 
+    private static void AfterWishlistViewShown(Component __instance)
+    {
+        GridItemView itemView = __instance != null
+            ? __instance.GetComponentInParent<GridItemView>(true)
+            : null;
+        if (itemView == null)
+        {
+            return;
+        }
+
+        EnsureUpgradeItemNeedsLoaded();
+        RaidItemViews.Add(itemView);
+        RefreshFallbackRaidItemMarker(itemView);
+    }
+
     private static void OnRaidItemViewCreated(GridItemView __result)
     {
         EnsureUpgradeItemNeedsLoaded();
         RefreshRaidItemMarker(__result);
+    }
+
+    private static void OnRaidGridItemViewAdded(GridView __instance, ItemView __0)
+    {
+        if (__instance == null || __0 == null)
+        {
+            return;
+        }
+
+        EnsureUpgradeItemNeedsLoaded();
+        RefreshRaidItemMarker(__0);
+    }
+
+    private static void OnItemViewItemChanged(ItemView __instance)
+    {
+        EnsureUpgradeItemNeedsLoaded();
+        RefreshRaidItemMarker(__instance);
+    }
+
+    private static void OnItemViewSearchStateChanged(ItemView __instance)
+    {
+        EnsureUpgradeItemNeedsLoaded();
+        RefreshRaidItemMarker(__instance);
+    }
+
+    private static void OnRaidItemSwapEventsRaised(SwapResult __instance, CommandStatus __1)
+    {
+        if (__instance != null && __1 == CommandStatus.Succeed)
+        {
+            RefreshRaidItemMarkers();
+        }
     }
 
     private static void OnItemViewInitialized(ItemView __instance)
@@ -574,7 +664,14 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             return;
         }
 
-        RaidItemViews.Remove(__instance);
+        if (__instance.Item == null)
+        {
+            RaidItemViews.Remove(__instance);
+        }
+        else
+        {
+            RaidItemViews.Add(__instance);
+        }
 
         if (_hoveredRaidItemView == __instance)
         {
@@ -989,6 +1086,26 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             return;
         }
 
+        if (itemView is GridItemView gridItemView)
+        {
+            if (gridItemView.Item == null)
+            {
+                RaidItemViews.Remove(itemView);
+            }
+            else
+            {
+                RaidItemViews.Add(itemView);
+            }
+
+            RefreshFallbackRaidItemMarker(gridItemView);
+            return;
+        }
+
+        RefreshFallbackRaidItemMarker(itemView);
+    }
+
+    private static void RefreshFallbackRaidItemMarker(ItemView itemView)
+    {
         Item item = itemView.Item;
         if (item == null)
         {
@@ -997,33 +1114,21 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             if (existingMarkerHandler != null && existingMarkerHandler.MarkerImage != null)
             {
                 existingMarkerHandler.MarkerImage.enabled = false;
+                existingMarkerHandler.Initialize(itemView, false);
             }
 
             return;
         }
 
         RaidItemViews.Add(itemView);
-        bool showMarkerInCurrentContext =
-            IsInRaid() || _showUpgradeItemMarkersInStash.Value;
-        string templateId = item?.TemplateId.ToString();
-        bool currencyAllowed = !IsCurrencyItem(templateId) || IsCurrencyItemEnabled(templateId);
-        bool needsCurrent = showMarkerInCurrentContext &&
-            _showCurrentUpgradeItemMarkers.Value &&
-            currencyAllowed &&
-            !string.IsNullOrEmpty(templateId) &&
-            CurrentUpgradeItemNeeds.ContainsKey(templateId);
-        bool needsFuture = showMarkerInCurrentContext &&
-            _showFutureUpgradeItemMarkers.Value &&
-            currencyAllowed &&
-            !string.IsNullOrEmpty(templateId) &&
-            FutureUpgradeItemNeeds.ContainsKey(templateId);
-        bool needsFavoriteCraft = showMarkerInCurrentContext &&
-            _showFavoriteCraftItemMarkers.Value &&
-            currencyAllowed &&
-            !string.IsNullOrEmpty(templateId) &&
-            FavoriteCraftItemNeeds.ContainsKey(templateId);
+        GetItemMarkerNeeds(
+            item,
+            out bool showMarkerInCurrentContext,
+            out bool needsCurrent,
+            out bool needsFuture,
+            out bool needsFavoriteCraft);
 
-        UpgradeMarkerHoverHandler markerHandler = FindRaidItemMarker(itemView);
+        UpgradeMarkerHoverHandler markerHandler = FindRaidItemOverlayMarker(itemView);
         if (markerHandler == null)
         {
             if (!needsCurrent && !needsFuture && !needsFavoriteCraft)
@@ -1042,20 +1147,23 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             markerHandler.Initialize(itemView);
         }
 
-        Transform markerParent = GetRaidItemMarkerParent(itemView);
-        if (markerHandler.transform.parent != markerParent)
-        {
-            markerHandler.transform.SetParent(markerParent, false);
-        }
-
         Image markerImage = markerHandler.MarkerImage;
         if (markerImage == null)
         {
             return;
         }
 
+        RectTransform markerLayer = EnsureRaidItemMarkerLayer(itemView, markerHandler);
+        if (markerLayer == null)
+        {
+            markerImage.enabled = false;
+            markerHandler.Initialize(itemView, false);
+            return;
+        }
+
         markerImage.enabled = showMarkerInCurrentContext &&
             (needsCurrent || needsFuture || needsFavoriteCraft);
+        markerHandler.Initialize(itemView, markerImage.enabled);
         if (!markerImage.enabled && _hoveredRaidItemView == itemView)
         {
             _hoveredRaidItemView = null;
@@ -1065,9 +1173,38 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         if (markerImage.enabled)
         {
             ConfigureRaidItemMarkerCorner(markerImage.rectTransform);
+            markerLayer.SetAsLastSibling();
             markerImage.transform.SetAsLastSibling();
             markerImage.sprite = GetUpgradeMarkerSprite(needsCurrent, needsFuture, needsFavoriteCraft);
         }
+    }
+
+    private static void GetItemMarkerNeeds(
+        Item item,
+        out bool showMarkerInCurrentContext,
+        out bool needsCurrent,
+        out bool needsFuture,
+        out bool needsFavoriteCraft)
+    {
+        showMarkerInCurrentContext =
+            IsInRaid() || _showUpgradeItemMarkersInStash.Value;
+        string templateId = item.TemplateId.ToString();
+        bool currencyAllowed = !IsCurrencyItem(templateId) || IsCurrencyItemEnabled(templateId);
+        needsCurrent = showMarkerInCurrentContext &&
+            _showCurrentUpgradeItemMarkers.Value &&
+            currencyAllowed &&
+            !string.IsNullOrEmpty(templateId) &&
+            CurrentUpgradeItemNeeds.ContainsKey(templateId);
+        needsFuture = showMarkerInCurrentContext &&
+            _showFutureUpgradeItemMarkers.Value &&
+            currencyAllowed &&
+            !string.IsNullOrEmpty(templateId) &&
+            FutureUpgradeItemNeeds.ContainsKey(templateId);
+        needsFavoriteCraft = showMarkerInCurrentContext &&
+            _showFavoriteCraftItemMarkers.Value &&
+            currencyAllowed &&
+            !string.IsNullOrEmpty(templateId) &&
+            FavoriteCraftItemNeeds.ContainsKey(templateId);
     }
 
     private static bool IsCurrencyItem(string templateId)
@@ -1093,23 +1230,17 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private static UpgradeMarkerHoverHandler FindRaidItemMarker(ItemView itemView)
     {
-        Transform markerParent = GetRaidItemMarkerParent(itemView);
-        UpgradeMarkerHoverHandler markerHandler = FindRaidItemMarker(markerParent);
-        if (markerHandler != null || markerParent == itemView.transform)
-        {
-            return markerHandler;
-        }
-
-        return FindRaidItemMarker(itemView.transform);
+        return itemView.GetComponentInChildren<UpgradeMarkerHoverHandler>(true);
     }
 
-    private static UpgradeMarkerHoverHandler FindRaidItemMarker(Transform parent)
+    private static UpgradeMarkerHoverHandler FindRaidItemOverlayMarker(ItemView itemView)
     {
-        for (int i = 0; i < parent.childCount; i++)
+        UpgradeMarkerHoverHandler[] markerHandlers =
+            itemView.GetComponentsInChildren<UpgradeMarkerHoverHandler>(true);
+        foreach (UpgradeMarkerHoverHandler markerHandler in markerHandlers)
         {
-            UpgradeMarkerHoverHandler markerHandler =
-                parent.GetChild(i).GetComponent<UpgradeMarkerHoverHandler>();
-            if (markerHandler != null)
+            if (markerHandler.transform.parent != null &&
+                markerHandler.transform.parent.name == RaidItemMarkerLayerName)
             {
                 return markerHandler;
             }
@@ -1118,22 +1249,19 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         return null;
     }
 
-    private static Transform GetRaidItemMarkerParent(ItemView itemView)
-    {
-        return itemView.MainImage != null ? itemView.MainImage.transform : itemView.transform;
-    }
-
     private static UpgradeMarkerHoverHandler CreateRaidItemMarker(ItemView itemView)
     {
+        var markerLayerObject = new GameObject(RaidItemMarkerLayerName, typeof(RectTransform));
+        markerLayerObject.transform.SetParent(itemView.transform, false);
+
         var markerObject = new GameObject(
             "HideoutUpgradeMarker",
             typeof(RectTransform),
             typeof(CanvasRenderer),
             typeof(Image));
-        markerObject.transform.SetParent(GetRaidItemMarkerParent(itemView), false);
+        markerObject.transform.SetParent(markerLayerObject.transform, false);
 
         RectTransform markerRect = markerObject.GetComponent<RectTransform>();
-        markerRect.anchorMin = new Vector2(0f, 1f);
         markerRect.sizeDelta = new Vector2(RaidItemMarkerSize, RaidItemMarkerSize);
         ConfigureRaidItemMarkerCorner(markerRect);
         markerRect.SetAsLastSibling();
@@ -1149,6 +1277,49 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         return markerHandler;
     }
 
+    private static RectTransform EnsureRaidItemMarkerLayer(
+        ItemView itemView,
+        UpgradeMarkerHoverHandler markerHandler)
+    {
+        RectTransform markerParent = itemView.MainImage != null
+            ? itemView.MainImage.rectTransform
+            : itemView.transform as RectTransform;
+        if (markerParent == null)
+        {
+            return null;
+        }
+
+        Transform markerLayer = markerHandler.transform.parent;
+        if (markerLayer == null ||
+            markerLayer.parent != markerParent ||
+            markerLayer.name != RaidItemMarkerLayerName)
+        {
+            if (markerLayer != null && markerLayer.name == RaidItemMarkerLayerName)
+            {
+                markerLayer.SetParent(markerParent, false);
+            }
+            else
+            {
+                var markerLayerObject = new GameObject(RaidItemMarkerLayerName, typeof(RectTransform));
+                markerLayer = markerLayerObject.transform;
+                markerLayer.SetParent(markerParent, false);
+            }
+
+            markerHandler.transform.SetParent(markerLayer, false);
+        }
+
+        RectTransform markerLayerRect = (RectTransform)markerLayer;
+        markerLayerRect.anchorMin = Vector2.zero;
+        markerLayerRect.anchorMax = Vector2.one;
+        markerLayerRect.localRotation = Quaternion.identity;
+        markerLayerRect.localScale = Vector3.one;
+        markerLayerRect.offsetMin = Vector2.zero;
+        markerLayerRect.offsetMax = Vector2.zero;
+        markerLayer.SetAsLastSibling();
+
+        return markerLayerRect;
+    }
+
     private static void ConfigureRaidItemMarkerCorner(RectTransform markerRect)
     {
         bool left = _itemMarkerCorner.Value == ItemMarkerCorner.TopLeft ||
@@ -1156,6 +1327,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         bool top = _itemMarkerCorner.Value == ItemMarkerCorner.TopLeft ||
             _itemMarkerCorner.Value == ItemMarkerCorner.TopRight;
         var anchor = new Vector2(left ? 0f : 1f, top ? 1f : 0f);
+
         markerRect.anchorMin = anchor;
         markerRect.anchorMax = anchor;
         markerRect.pivot = anchor;
