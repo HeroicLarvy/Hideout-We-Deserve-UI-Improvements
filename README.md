@@ -15,10 +15,6 @@ The first in a series of hideout QoL and redesign mods.
 
 Download `Hideout-We-Deserve-UI-Improvements-1.1.0.zip` from [Releases](https://github.com/HeroicLarvy/Hideout-We-Deserve-UI-Improvements/releases), then extract it into your SPT folder. The DLL is already inside `BepInEx\plugins`.
 
-Tyfon UI Fixes is optional. This mod does not require it to load.
-
-For Fika, install the mod on each player's client.
-
 ## Compatibility
 Should be compatible with literally everything but I have extensively tested it with:
 - Tyfon's UI fixes
