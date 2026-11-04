@@ -1,6 +1,6 @@
 # Hideout We Deserve - UI Improvements
 
-The first in a series of hideout QoL and redesign mods.
+The first in a series of hideout QoL and redesign mods. SPT 4.1.6
 
 ## What you get
 
