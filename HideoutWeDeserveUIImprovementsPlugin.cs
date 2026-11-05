@@ -23,7 +23,7 @@ public sealed class ConfigurationManagerAttributes
 }
 
 [BepInPlugin(PluginId, PluginName, PluginVersion)]
-public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
+public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 {
     private enum ItemMarkerCorner
     {
@@ -478,6 +478,16 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             AccessTools.Method(typeof(HideoutRepresentation), nameof(HideoutRepresentation.RemoveFavoriteScheme)),
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnFavoriteProductionSchemesChanged)));
 
+        _harmony.Patch(
+            AccessTools.Method(typeof(ProductionPanel), nameof(ProductionPanel.ShowContents)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(RegisterCraftFolderPanel)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(ProductionPanel), nameof(ProductionPanel.Close)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(UnregisterCraftFolderPanel)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(ProductionPanel), nameof(ProductionPanel.GetSortedSchemes)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(FilterSchemesByFolder)));
+
         Logger.LogInfo($"{PluginName} loaded.");
     }
 
@@ -602,6 +612,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     {
         RefreshClaimAllButton();
         DrawCraftQueuePanel();
+        DrawCraftFolderBar();
         DrawWorldPanelTooltip();
         if (_showUpgradeItemTooltipsOnHover.Value)
         {
@@ -1148,27 +1159,10 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     }
 
     // Returns the station window bounds in IMGUI coordinates (origin top-left).
-    private static bool TryGetCraftWindowRect(ProduceView view, out Rect rect)
+    private static bool TryGetCraftWindowRect(Component view, out Rect rect)
     {
         rect = default;
-        RectTransform window = view.GetComponentInParent<AreaScreenSubstrate>()?._contentLayout?.transform as RectTransform;
-        if (window == null)
-        {
-            return false;
-        }
-
-        Canvas canvas = window.GetComponentInParent<Canvas>();
-        Camera camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay ? canvas.worldCamera : null;
-        var corners = new Vector3[4];
-        window.GetWorldCorners(corners);
-        Vector2 bottomLeft = RectTransformUtility.WorldToScreenPoint(camera, corners[0]);
-        Vector2 topRight = RectTransformUtility.WorldToScreenPoint(camera, corners[2]);
-        rect = Rect.MinMaxRect(
-            bottomLeft.x,
-            Screen.height - topRight.y,
-            topRight.x,
-            Screen.height - bottomLeft.y);
-        return rect.width > 1f && rect.height > 1f;
+        return TryGetScreenRect(view.GetComponentInParent<AreaScreenSubstrate>()?._contentLayout, out rect);
     }
 
     private static void DrawCraftQueuePanel()
