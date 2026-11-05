@@ -234,7 +234,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     private static void FilterSchemesByFolder(ProductionPanel __instance, ref IEnumerable<ProductionScheme> __result)
     {
         EAreaType? area = GetPanelArea(__instance);
-        if (area == null || __result == null)
+        if (!_enableCraftFolders.Value || area == null || __result == null)
         {
             return;
         }
@@ -488,6 +488,13 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         ProductionPanel panel = CraftFolderPanels.FirstOrDefault(candidate =>
             candidate.isActiveAndEnabled && GetCraftViewList(candidate) != null);
         EAreaType? areaOrNull = GetPanelArea(panel);
+        if (!_enableCraftFolders.Value && !_enableCraftQueueBar.Value)
+        {
+            ResetFolderUi();
+            RestoreFolderBarSpace();
+            return;
+        }
+
         if (panel == null || areaOrNull == null || !TryGetCraftWindowRect(panel, out Rect window))
         {
             ResetFolderUi();
@@ -511,16 +518,34 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         AsyncViewList<ProductionScheme, ProduceView> viewList = GetCraftViewList(panel);
 
         // The bar sits flush with the top edge of the station window, level with its header row.
-        var bar = new Rect(window.x, window.y - BarTopNudge, window.width, FolderBarHeight);
-        var statusBar = new Rect(bar.x, bar.yMax, bar.width, StatusBarHeight);
-        ReserveFolderBarSpace(panel, new Rect(bar.x, bar.y, bar.width, bar.height + StatusBarHeight));
+        bool foldersEnabled = _enableCraftFolders.Value;
+        bool statusEnabled = _enableCraftQueueBar.Value;
+        float barHeight = foldersEnabled ? FolderBarHeight : 0f;
+        float statusHeight = statusEnabled ? StatusBarHeight : 0f;
+        var bar = new Rect(window.x, window.y - BarTopNudge, window.width, barHeight);
+        var statusBar = new Rect(bar.x, bar.yMax, bar.width, statusHeight);
+        ReserveFolderBarSpace(panel, new Rect(bar.x, bar.y, bar.width, barHeight + statusHeight));
+        if (!foldersEnabled)
+        {
+            ClosePopup();
+            _dragCandidateSchemeId = null;
+            _isDraggingCraft = false;
+            _isDraggingFolder = false;
+            _dragFolderIndex = -1;
+            DrawCraftStatusBar(statusBar, area, true, viewList, panel);
+            return;
+        }
+
         if (repaint)
         {
             FillRect(bar, new Color(0.035f, 0.045f, 0.055f, 1f));
             DrawBorder(bar, new Color(0.68f, 0.78f, 0.86f, 0.82f), 1.5f);
         }
 
-        DrawCraftStatusBar(statusBar, area, !popupOpen, viewList, panel);
+        if (statusEnabled)
+        {
+            DrawCraftStatusBar(statusBar, area, !popupOpen, viewList, panel);
+        }
 
         // Index -1 is the "Unassigned" tab (far right), 0..n-1 are folders, n is the add button.
         var tabs = new List<(int Index, Rect Rect)>();

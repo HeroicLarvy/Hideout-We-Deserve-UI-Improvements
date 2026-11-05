@@ -35,7 +35,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private const string PluginId = "com.heroiclarvy.hideoutwedeserveuiimprovements";
     private const string PluginName = "Hideout We Deserve - UI Improvements";
-    private const string PluginVersion = "1.4.0";
+    private const string PluginVersion = "2.0.0";
     private const float HoverItemGap = 4.5f;
     private const float HoverProgressWidth = 104f;
     private const float RaidItemMarkerSize = 18f;
@@ -45,6 +45,8 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static HideoutWeDeserveUIImprovementsPlugin _instance;
     private static ConfigEntry<bool> _hideBottomScrollbar;
+    private static ConfigEntry<bool> _enableCraftFolders;
+    private static ConfigEntry<bool> _enableCraftQueueBar;
     private static ConfigEntry<bool> _showUpgradeRequirementsOnHover;
     private static ConfigEntry<bool> _showActiveCraftOnHover;
     private static ConfigEntry<bool> _showItemNamesOnHover;
@@ -401,6 +403,18 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         _currentUpgradeItemMarkerColor.SettingChanged += OnUpgradeMarkerColorChanged;
         _futureUpgradeItemMarkerColor.SettingChanged += OnUpgradeMarkerColorChanged;
         _favoriteCraftItemMarkerColor.SettingChanged += OnUpgradeMarkerColorChanged;
+        _enableCraftFolders = Config.Bind(
+            "Crafting",
+            "EnableFolders",
+            true,
+            "Show craft folders in station crafting windows. Changes apply the next time a crafting window is opened.");
+        _enableCraftQueueBar = Config.Bind(
+            "Crafting",
+            "EnableQueueAndActiveCraftBar",
+            true,
+            "Show the active craft bar and allow queuing crafts. Disabling this disables craft queuing entirely.");
+        _enableCraftFolders.SettingChanged += OnCraftWindowSettingChanged;
+        _enableCraftQueueBar.SettingChanged += OnCraftWindowSettingChanged;
         _hideBottomScrollbar.SettingChanged += OnBottomBarSettingChanged;
         _harmony = new Harmony(PluginId);
         _harmony.Patch(
@@ -535,6 +549,8 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
     {
         _harmony?.UnpatchSelf();
         _hideBottomScrollbar.SettingChanged -= OnBottomBarSettingChanged;
+        _enableCraftFolders.SettingChanged -= OnCraftWindowSettingChanged;
+        _enableCraftQueueBar.SettingChanged -= OnCraftWindowSettingChanged;
         _showCurrentUpgradeItemMarkers.SettingChanged -= OnUpgradeMarkerVisibilityChanged;
         _showFutureUpgradeItemMarkers.SettingChanged -= OnUpgradeMarkerVisibilityChanged;
         _showFavoriteCraftItemMarkers.SettingChanged -= OnUpgradeMarkerVisibilityChanged;
@@ -870,6 +886,16 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         }
 
         EnsureQueueLoaded();
+        if (!_enableCraftQueueBar.Value)
+        {
+            if (QueueButtons.TryGetValue(__instance, out DefaultUIButton disabledButton) && disabledButton != null)
+            {
+                disabledButton.gameObject.SetActive(false);
+            }
+
+            return;
+        }
+
         ActiveProduceViews.Add(__instance);
         if (!QueueButtons.TryGetValue(__instance, out DefaultUIButton button) || button == null)
         {
@@ -1170,6 +1196,11 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void DrawCraftQueuePanel()
     {
+        if (!_enableCraftQueueBar.Value)
+        {
+            return;
+        }
+
         // Views are only inactive while the hideout is hidden (e.g. on the flea market), so keep them for the return.
         ActiveProduceViews.RemoveWhere(view => view == null || view.Producer == null);
         ProduceView visibleView = ActiveProduceViews.FirstOrDefault(view => view.isActiveAndEnabled);
@@ -1232,7 +1263,8 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void ProcessCraftQueue()
     {
-        if (_isProcessingQueue ||
+        if (!_enableCraftQueueBar.Value ||
+            _isProcessingQueue ||
             Time.realtimeSinceStartup < _nextQueueProcessAt ||
             !Singleton<HideoutRepresentation>.Instantiated)
         {
@@ -3712,6 +3744,16 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
             isCompleted ? 0f : producingItem.EstimatedTimeLeft,
             producer.IsWorking,
             isCompleted);
+    }
+
+    private static void OnCraftWindowSettingChanged(object sender, EventArgs args)
+    {
+        RestoreFolderBarSpace();
+        RestoreHostedViews(_ => true);
+        foreach (ProduceView view in ActiveProduceViews.ToList())
+        {
+            OnProduceViewButtonsUpdated(view);
+        }
     }
 
     private static void OnBottomBarSettingChanged(object sender, EventArgs args)
