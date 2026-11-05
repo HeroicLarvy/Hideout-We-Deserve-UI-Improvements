@@ -3,7 +3,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>HideoutWeDeserveUIImprovements</AssemblyName>
     <RootNamespace>HideoutWeDeserveUIImprovements</RootNamespace>
-    <Version>1.1.5</Version>
+    <Version>1.2.0</Version>
     <Company>HeroicLarvy</Company>
     <Product>Hideout We Deserve - UI Improvements</Product>
     <LangVersion>latest</LangVersion>

@@ -35,7 +35,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private const string PluginId = "com.heroiclarvy.hideoutwedeserveuiimprovements";
     private const string PluginName = "Hideout We Deserve - UI Improvements";
-    private const string PluginVersion = "1.1.5";
+    private const string PluginVersion = "1.2.0";
     private const float HoverItemGap = 4.5f;
     private const float HoverProgressWidth = 104f;
     private const float RaidItemMarkerSize = 18f;
@@ -70,6 +70,9 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     private static float _areasPanelOriginalAlpha;
     private static bool _areasPanelOriginalBlocksRaycasts;
     private static bool _areasPanelOriginalInteractable;
+    private static DefaultUIButton _claimAllButton;
+    private static bool _isClaimingAll;
+    private static float _nextClaimAllRefreshAt;
     private static float _nextRequirementRefreshAt;
     private static float _upgradeItemNeedsRefreshAt;
     private static float _nextUpgradeItemNeedsLoadRetryAt;
@@ -577,6 +580,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private void OnGUI()
     {
+        RefreshClaimAllButton();
         DrawWorldPanelTooltip();
         if (_showUpgradeItemTooltipsOnHover.Value)
         {
@@ -584,8 +588,120 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         }
     }
 
+    private static void EnsureClaimAllButton(HideoutScreenOverlay overlay)
+    {
+        if (_claimAllButton != null || overlay == null || overlay._returnToMenuButtonSpawner == null)
+        {
+            return;
+        }
+
+        // Clone the BACK button so the new button inherits the native Tarkov look and hover behavior.
+        DefaultUIButton button = UnityEngine.Object.Instantiate(
+            overlay._returnToMenuButtonSpawner,
+            overlay.transform,
+            false);
+        button.name = "ClaimAllCraftsButton";
+        button.SetRawText("CLAIM ALL", button.HeaderSize);
+        button.SetTooltips(string.Empty, string.Empty);
+        button.OnClick.AddListener(() => _ = ClaimAllCrafts());
+
+        var rect = (RectTransform)button.transform;
+        rect.anchorMin = rect.anchorMax = rect.pivot = new Vector2(1f, 0f);
+        rect.anchoredPosition = new Vector2(-30f, 30f);
+        button.transform.SetAsLastSibling();
+        _claimAllButton = button;
+        _nextClaimAllRefreshAt = 0f;
+    }
+
+    private static void RefreshClaimAllButton()
+    {
+        if (_claimAllButton == null || Time.realtimeSinceStartup < _nextClaimAllRefreshAt)
+        {
+            return;
+        }
+
+        _nextClaimAllRefreshAt = Time.realtimeSinceStartup + 0.25f;
+        bool canClaim = !_isClaimingAll && GetProducersWithCompletedItems().Count > 0;
+        if (_claimAllButton.Interactable != canClaim)
+        {
+            _claimAllButton.Interactable = canClaim;
+        }
+    }
+
+    private static List<ItemsProducerBase> GetProducersWithCompletedItems()
+    {
+        var producers = new List<ItemsProducerBase>();
+        if (!Singleton<HideoutRepresentation>.Instantiated)
+        {
+            return producers;
+        }
+
+        ProductionController productionController = Singleton<HideoutRepresentation>.Instance.ProductionController;
+        if (productionController != null)
+        {
+            producers.AddRange(productionController.GetProducersWithProducedItem());
+        }
+
+        return producers;
+    }
+
+    private static async Task ClaimAllCrafts()
+    {
+        if (_isClaimingAll || !Singleton<HideoutRepresentation>.Instantiated)
+        {
+            return;
+        }
+
+        _isClaimingAll = true;
+        _claimAllButton.Interactable = false;
+        try
+        {
+            HideoutRepresentation hideout = Singleton<HideoutRepresentation>.Instance;
+            foreach (ItemsProducerBase producer in GetProducersWithCompletedItems())
+            {
+                // Each claim clears one scheme, so keep asking the storage for the next ready scheme.
+                while (producer.HasCompletedItems)
+                {
+                    string schemeId = producer.CompleteItemsStorage.FindCompleteItems().Item1;
+                    if (string.IsNullOrEmpty(schemeId))
+                    {
+                        break;
+                    }
+
+                    if (!await hideout.GetProducedItems(producer, schemeId, false))
+                    {
+                        return;
+                    }
+
+                    // Mirrors ProductionPanel.GetProducedItems, which clears the claimed scheme on every producer.
+                    List<ItemsProducerBase> areaProducers =
+                        hideout.ProductionController.GetAreaProducers(producer.AreaData) ?? new List<ItemsProducerBase> { producer };
+                    foreach (ItemsProducerBase areaProducer in areaProducers)
+                    {
+                        areaProducer.GetItems(schemeId);
+                    }
+
+                    if (producer.CompleteItemsStorage.GetItemsCount(schemeId) > 0)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            _instance.Logger.LogError($"Claim all crafts failed: {exception}");
+        }
+        finally
+        {
+            _isClaimingAll = false;
+            _nextClaimAllRefreshAt = 0f;
+        }
+    }
+
     private static void OnHideoutScreenShown(HideoutScreenOverlay __instance)
     {
+        EnsureClaimAllButton(__instance);
         ApplyBottomBarVisibility(__instance);
         RefreshUpgradeItemNeedsFromHideout();
         RefreshRaidItemMarkers();
