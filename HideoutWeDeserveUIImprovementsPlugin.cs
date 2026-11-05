@@ -479,6 +479,9 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnFavoriteProductionSchemesChanged)));
 
         _harmony.Patch(
+            AccessTools.Method(typeof(BonusesPanel), nameof(BonusesPanel.Show)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnBonusesPanelShown)));
+        _harmony.Patch(
             AccessTools.Method(typeof(ProductionPanel), nameof(ProductionPanel.ShowContents)),
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(RegisterCraftFolderPanel)));
         _harmony.Patch(
@@ -1189,8 +1192,12 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         const float padding = 10f;
         bool hasMissing = QueueNeeds.Count > 0;
         bool canBuy = QueueNeeds.Any(need => need.Buyable);
-        int rows = entries.Count + 1 +
-            (hasMissing ? QueueNeeds.Count + 1 + (canBuy ? 1 : 0) : 0);
+        if (!hasMissing)
+        {
+            return;
+        }
+
+        int rows = QueueNeeds.Count + 1;
         float height = padding * 2f + rowHeight * rows;
         var panel = new Rect(20f, Screen.height - height - 120f, width, height);
         if (TryGetCraftWindowRect(visibleView, out Rect window))
@@ -1201,14 +1208,9 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         }
 
         DrawSectionPanel(panel);
-        DrawOutlinedLabel(
-            new Rect(panel.x + padding, panel.y + padding, width - padding * 2f, rowHeight),
-            "Queued crafts:",
-            _tooltipSectionStyle);
-
         if (hasMissing)
         {
-            float missingY = panel.y + padding + rowHeight * (entries.Count + 1);
+            float missingY = panel.y + padding;
             DrawOutlinedLabel(
                 new Rect(panel.x + padding, missingY, width - padding * 2f, rowHeight),
                 "Missing ingredients:",
@@ -1225,55 +1227,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
                     _raidItemTooltipBodyStyle);
             }
 
-            if (canBuy)
-            {
-                var buyRect = new Rect(
-                    panel.x + padding,
-                    missingY + rowHeight * (QueueNeeds.Count + 1) + 3f,
-                    width - padding * 2f,
-                    rowHeight - 6f);
-                if (DrawQueuePanelButton(buyRect, "BUY MISSING ON FLEA MARKET"))
-                {
-                    OpenQueueShoppingList(area);
-                }
-            }
-        }
-
-        QueuedCraft toCancel = null;
-        for (int i = 0; i < entries.Count; i++)
-        {
-            float rowY = panel.y + padding + rowHeight * (i + 1);
-            string name = TryFindProducer(entries[i].Area, entries[i].SchemeId, out _, out ProductionScheme scheme)
-                ? (scheme.endProduct.ToString() + " ShortName").Localized()
-                : entries[i].SchemeId;
-            DrawOutlinedLabel(
-                new Rect(panel.x + padding, rowY, width - padding * 2f - rowHeight, rowHeight),
-                $"{i + 1}. {name}",
-                _raidItemTooltipBodyStyle);
-
-            var cancelRect = new Rect(panel.xMax - padding - 24f, rowY + 3f, 24f, 24f);
-            bool hovered = cancelRect.Contains(Event.current.mousePosition);
-            Color previousColor = GUI.color;
-            GUI.color = hovered ? new Color(0.9f, 0.2f, 0.15f, 1f) : new Color(0.5f, 0.1f, 0.08f, 0.9f);
-            GUI.DrawTexture(cancelRect, Texture2D.whiteTexture);
-            GUI.color = previousColor;
-            DrawOutlinedLabel(cancelRect, "X", _tooltipBodyStyle);
-            if (hovered && Event.current.type == EventType.MouseDown && Event.current.button == 0)
-            {
-                toCancel = entries[i];
-                Event.current.Use();
-            }
-        }
-
-        if (toCancel != null)
-        {
-            CraftQueue.Remove(toCancel);
-            SaveQueue();
-            RefreshQueueNeeds(true);
-            foreach (ProduceView view in ActiveProduceViews.ToList())
-            {
-                OnProduceViewButtonsUpdated(view);
-            }
         }
     }
 

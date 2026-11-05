@@ -226,6 +226,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     {
         CraftFolderPanels.Remove(__instance);
         RestoreFolderBarSpace();
+        RestoreHostedViews(_ => true);
     }
 
     // Both the first build and later re-sorts go through GetSortedSchemes, so filtering here means
@@ -246,15 +247,16 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
             return;
         }
 
+        // Crafts in production are always kept so their views can be shown in the status bar.
         if (selected < 0)
         {
             // "Unassigned" only lists crafts that aren't filed in a folder.
-            __result = __result.Where(scheme => !folders.Any(folder => folder.Schemes.Contains(scheme._id))).ToList();
+            __result = __result.Where(scheme => IsSchemeProducing(area.Value, scheme._id) || !folders.Any(folder => folder.Schemes.Contains(scheme._id))).ToList();
             return;
         }
 
         List<string> allowed = folders[selected].Schemes;
-        __result = __result.Where(scheme => allowed.Contains(scheme._id)).ToList();
+        __result = __result.Where(scheme => IsSchemeProducing(area.Value, scheme._id) || allowed.Contains(scheme._id)).ToList();
     }
 
     private static AsyncViewList<ProductionScheme, ProduceView> GetCraftViewList(ProductionPanel panel)
@@ -400,6 +402,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     private static void ResetFolderUi()
     {
         ClosePopup();
+        RestoreHostedViews(_ => true);
         _dragCandidateSchemeId = null;
         _isDraggingCraft = false;
         _isDraggingFolder = false;
@@ -509,12 +512,15 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
 
         // The bar sits flush with the top edge of the station window, level with its header row.
         var bar = new Rect(window.x, window.y - BarTopNudge, window.width, FolderBarHeight);
-        ReserveFolderBarSpace(panel, bar);
+        var statusBar = new Rect(bar.x, bar.yMax, bar.width, StatusBarHeight);
+        ReserveFolderBarSpace(panel, new Rect(bar.x, bar.y, bar.width, bar.height + StatusBarHeight));
         if (repaint)
         {
             FillRect(bar, new Color(0.035f, 0.045f, 0.055f, 1f));
             DrawBorder(bar, new Color(0.68f, 0.78f, 0.86f, 0.82f), 1.5f);
         }
+
+        DrawCraftStatusBar(statusBar, area, !popupOpen, viewList, panel);
 
         // Index -1 is the "Unassigned" tab (far right), 0..n-1 are folders, n is the add button.
         var tabs = new List<(int Index, Rect Rect)>();
@@ -600,7 +606,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
             }
         }
 
-        List<(ProductionScheme Scheme, Rect Rect)> craftButtons = GetCraftFolderButtons(viewList, window, bar);
+        List<(ProductionScheme Scheme, Rect Rect)> craftButtons = GetCraftFolderButtons(viewList, window, statusBar);
         if (repaint)
         {
             foreach ((ProductionScheme scheme, Rect rect) in craftButtons)
@@ -681,7 +687,20 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
 
             float size = Mathf.Max(24f, reference.height);
             var rect = new Rect(reference.x - size - 6f, reference.y + (reference.height - size) / 2f, size, size);
-            if (rect.y >= bar.yMax && rect.yMax <= window.yMax && rect.x >= window.x)
+            // Clip to the scroll viewport so buttons never draw over the footer or the bars.
+            ScrollRect scroll = view.GetComponentInParent<ScrollRect>();
+            RectTransform viewport = scroll == null ? null : scroll.viewport != null ? scroll.viewport : scroll.transform as RectTransform;
+            Rect clip = window;
+            if (viewport != null && TryGetScreenRect(viewport, out Rect viewportRect))
+            {
+                clip = Rect.MinMaxRect(
+                    Mathf.Max(window.xMin, viewportRect.xMin),
+                    Mathf.Max(window.yMin, viewportRect.yMin),
+                    Mathf.Min(window.xMax, viewportRect.xMax),
+                    Mathf.Min(window.yMax, viewportRect.yMax));
+            }
+
+            if (rect.y >= bar.yMax && rect.y >= clip.yMin && rect.yMax <= clip.yMax && rect.x >= clip.xMin)
             {
                 buttons.Add((pair.Key, rect));
             }
