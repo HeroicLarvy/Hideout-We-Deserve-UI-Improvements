@@ -35,7 +35,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private const string PluginId = "com.heroiclarvy.hideoutwedeserveuiimprovements";
     private const string PluginName = "Hideout We Deserve - UI Improvements";
-    private const string PluginVersion = "1.1.0";
+    private const string PluginVersion = "1.1.5";
     private const float HoverItemGap = 4.5f;
     private const float HoverProgressWidth = 104f;
     private const float RaidItemMarkerSize = 18f;
@@ -101,6 +101,13 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     private static GUIStyle _tooltipBodyStyle;
     private static GUIStyle _raidItemTooltipBodyStyle;
     private static GUIStyle _tooltipCountStyle;
+    private static GUIStyle _tooltipMoneyCountStyle;
+    private static readonly HashSet<string> MoneyTemplateIds = new HashSet<string>
+    {
+        "5449016a4bdc2d6f028b456f", // Roubles
+        "5696686a4bdc2d9d6c8b4567", // Dollars
+        "569668774bdc2da2298b4568"  // Euros
+    };
     private static GUIStyle _tooltipTimerStyle;
     private static GUIStyle _tooltipProgressStyle;
     private Harmony _harmony;
@@ -231,12 +238,21 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         public readonly bool FloorMopped;
         public readonly ItemRequirement MopItem;
         public readonly List<ItemRequirement> DismantleItems;
+        public readonly int StageLevel;
+        public readonly List<KeyValuePair<int, List<ItemRequirement>>> FutureStages;
 
-        public DefectiveWallRequirements(bool floorMopped, ItemRequirement mopItem, List<ItemRequirement> dismantleItems)
+        public DefectiveWallRequirements(
+            bool floorMopped,
+            ItemRequirement mopItem,
+            List<ItemRequirement> dismantleItems,
+            int stageLevel,
+            List<KeyValuePair<int, List<ItemRequirement>>> futureStages)
         {
             FloorMopped = floorMopped;
             MopItem = mopItem;
             DismantleItems = dismantleItems;
+            StageLevel = stageLevel;
+            FutureStages = futureStages;
         }
     }
 
@@ -902,9 +918,23 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                         pendingNeeds,
                         requirementsToTest,
                         areaData.Template.Name,
-                        "Dismantle",
+                        $"Stage {wallRequirements.StageLevel} dismantle",
                         dismantleItem,
-                        true);
+                        false);
+                }
+
+                foreach (KeyValuePair<int, List<ItemRequirement>> futureStage in wallRequirements.FutureStages)
+                {
+                    foreach (ItemRequirement futureItem in futureStage.Value)
+                    {
+                        AddPendingUpgradeItemNeed(
+                            pendingNeeds,
+                            requirementsToTest,
+                            areaData.Template.Name,
+                            $"Stage {futureStage.Key} dismantle",
+                            futureItem,
+                            true);
+                    }
                 }
 
                 continue;
@@ -1761,7 +1791,10 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         ActiveCraft craft = _showActiveCraftOnHover.Value ? GetActiveCraft(areaData) : null;
         var upgradeRequirements = new List<Requirement>();
         DefectiveWallRequirements wallRequirements = null;
-        if (_showUpgradeRequirementsOnHover.Value)
+        (string Heading, string Text)? buildProgress = _showUpgradeRequirementsOnHover.Value
+            ? GetBuildProgress(areaData)
+            : null;
+        if (_showUpgradeRequirementsOnHover.Value && !buildProgress.HasValue)
         {
             if (areaData.Template.Type == EAreaType.EmergencyWall)
             {
@@ -1799,20 +1832,43 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             _nextRequirementRefreshAt = Time.realtimeSinceStartup + 1f;
         }
 
-        if (upgradeRequirements.Count == 0 && wallRequirements == null && craft == null)
+        if (upgradeRequirements.Count == 0 && wallRequirements == null && craft == null && !buildProgress.HasValue)
         {
             return;
         }
 
-        DrawHoverTooltip(areaData, upgradeRequirements, craft, wallRequirements);
+        DrawHoverTooltip(areaData, upgradeRequirements, craft, wallRequirements, buildProgress);
+    }
+
+    private static (string Heading, string Text)? GetBuildProgress(AreaData areaData)
+    {
+        bool isConstruction = areaData.CurrentLevel <= 0;
+        switch (areaData.Status)
+        {
+            case EAreaStatus.Constructing:
+            case EAreaStatus.Upgrading:
+            case EAreaStatus.AutoUpgrading:
+                TimeSpan remaining = areaData.TimeLeft;
+                string time = remaining <= TimeSpan.Zero
+                    ? "Finishing..."
+                    : $"{(int)remaining.TotalHours:D2}:{remaining.Minutes:D2}:{remaining.Seconds:D2}";
+                return (isConstruction ? "Constructing:" : "Upgrading:", time);
+            case EAreaStatus.ReadyToInstallConstruct:
+            case EAreaStatus.ReadyToInstallUpgrade:
+                return (isConstruction ? "Construction Complete:" : "Upgrade Complete:", "Ready to install");
+            default:
+                return null;
+        }
     }
 
     private static void DrawHoverTooltip(
         AreaData areaData,
         List<Requirement> upgradeRequirements,
         ActiveCraft craft,
-        DefectiveWallRequirements wallRequirements)
+        DefectiveWallRequirements wallRequirements,
+        (string Heading, string Text)? buildProgress)
     {
+        const float buildTextHeight = 36f;
         EnsureTooltipStyles();
         const float maxWidth = 1120f;
         const float padding = 12f;
@@ -1826,14 +1882,18 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         List<UpgradeStatus> upgradeStatuses = GetUpgradeStatuses(upgradeRequirements);
         List<float> upgradeStatusWidths = Enumerable.Repeat(58f, upgradeStatuses.Count).ToList();
         bool showWallMopItem = wallRequirements != null && !wallRequirements.FloorMopped && wallRequirements.MopItem != null;
+        string wallStageLabel = wallRequirements == null || wallRequirements.StageLevel <= 0
+            ? string.Empty
+            : $"Stage {wallRequirements.StageLevel} - ";
+        string wallDismantleHeading = $"{wallStageLabel}Dismantle:";
         string wallMopHeading = wallRequirements == null
             ? string.Empty
             : wallRequirements.FloorMopped
-                ? "Mop the floor: The floor has been mopped"
+                ? $"{wallStageLabel}Mop the floor: The floor has been mopped"
                 : wallRequirements.MopItem != null &&
                   wallRequirements.MopItem.UserItemsCount >= wallRequirements.MopItem.IntCount
-                    ? "Mop the floor: Available"
-                    : "Mop the floor:";
+                    ? $"{wallStageLabel}Mop the floor: Available"
+                    : $"{wallStageLabel}Mop the floor:";
         bool showWallDismantle = wallRequirements != null && wallRequirements.DismantleItems.Count > 0;
         string timeDisplay = craft == null ? string.Empty : GetTimeDisplay(craft);
         float timeWidth = craft == null ? 0f : MeasureTimeDisplayWidth(timeDisplay);
@@ -1863,10 +1923,19 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             contentWidth = Mathf.Max(contentWidth, MeasureTextWidth(upgradeHeading, _tooltipSectionStyle));
         }
 
+        if (buildProgress.HasValue)
+        {
+            contentWidth = Mathf.Max(
+                contentWidth,
+                MeasureTextWidth(buildProgress.Value.Heading, _tooltipSectionStyle),
+                MeasureTextWidth("00:00:00", _tooltipProgressStyle),
+                MeasureTextWidth(buildProgress.Value.Text, _tooltipProgressStyle));
+        }
+
         if (wallRequirements != null)
         {
             contentWidth = Mathf.Max(contentWidth, MeasureTextWidth(wallMopHeading, _tooltipSectionStyle));
-            contentWidth = Mathf.Max(contentWidth, MeasureTextWidth("Dismantle:", _tooltipSectionStyle));
+            contentWidth = Mathf.Max(contentWidth, MeasureTextWidth(wallDismantleHeading, _tooltipSectionStyle));
             if (showWallMopItem || showWallDismantle)
             {
                 contentWidth = Mathf.Max(contentWidth, itemWidth);
@@ -1886,6 +1955,11 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                 itemWidth,
                 itemHeight,
                 timeWidth);
+        }
+
+        if (buildProgress.HasValue)
+        {
+            height += sectionPadding * 2f + sectionHeight + sectionGap + buildTextHeight;
         }
 
         if (upgradeRequirements.Count > 0)
@@ -1930,6 +2004,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         }
 
         int sectionCount = (craft == null ? 0 : 1) +
+            (buildProgress.HasValue ? 1 : 0) +
             (upgradeRequirements.Count == 0 ? 0 : 1) +
             (wallRequirements == null ? 0 : 1);
         height += Mathf.Max(0, sectionCount - 1) * sectionGap;
@@ -1968,10 +2043,27 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             currentY += sectionHeight + sectionGap;
             currentY += DrawActiveCraftStrip(contentLeft, currentY, availableWidth, craft, timeDisplay, itemWidth, itemHeight, timeWidth);
             currentY += sectionPadding;
-            if (upgradeRequirements.Count > 0 || wallRequirements != null)
+            if (buildProgress.HasValue || upgradeRequirements.Count > 0 || wallRequirements != null)
             {
                 currentY += sectionGap;
             }
+        }
+
+        if (buildProgress.HasValue)
+        {
+            float buildHeight = sectionPadding * 2f + sectionHeight + sectionGap + buildTextHeight;
+            DrawSectionPanel(new Rect(sectionLeft, currentY, panelWidth, buildHeight));
+            currentY += sectionPadding;
+            DrawOutlinedLabel(
+                new Rect(contentLeft, currentY, availableWidth, sectionHeight),
+                buildProgress.Value.Heading,
+                _tooltipSectionStyle);
+            currentY += sectionHeight + sectionGap;
+            DrawOutlinedLabel(
+                new Rect(contentLeft, currentY, availableWidth, buildTextHeight),
+                buildProgress.Value.Text,
+                _tooltipProgressStyle);
+            currentY += buildTextHeight + sectionPadding;
         }
 
         if (upgradeRequirements.Count > 0)
@@ -2059,7 +2151,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                 currentY += sectionGap;
                 DrawOutlinedLabel(
                     new Rect(contentLeft, currentY, availableWidth, sectionHeight),
-                    "Dismantle:",
+                    wallDismantleHeading,
                     _tooltipSectionStyle);
                 currentY += sectionHeight + sectionGap;
                 currentY += DrawItemStrip(
@@ -2142,16 +2234,41 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             ItemRequirement requirement = itemRequirements[i];
             int availableCount = Mathf.Clamp(requirement.UserItemsCount, 0, requirement.IntCount);
             Rect itemRect = GetCenteredFlowEntry(widths, i, left, top, itemHeight, availableWidth, gap);
+            bool isMoney = MoneyTemplateIds.Contains(requirement.TemplateId);
             DrawItemCard(
                 itemRect,
                 requirement.Item,
                 requirement.ItemName,
-                $"{availableCount}/{requirement.IntCount}",
+                isMoney
+                    ? $"{FormatMoneyAmount(availableCount)}/{FormatMoneyAmount(requirement.IntCount)}"
+                    : $"{availableCount}/{requirement.IntCount}",
                 showNames,
-                availableCount >= requirement.IntCount);
+                availableCount >= requirement.IntCount,
+                isMoney);
         }
 
         return MeasureItemFlowHeight(requirements.Count, itemWidth, availableWidth, itemHeight);
+    }
+
+    private static string FormatMoneyAmount(int amount)
+    {
+        if (amount >= 1000000)
+        {
+            return TrimTrailingZeros(amount / 1000000d, 2) + "M";
+        }
+
+        if (amount >= 1000)
+        {
+            return TrimTrailingZeros(amount / 1000d, 1) + "k";
+        }
+
+        return amount.ToString();
+    }
+
+    private static string TrimTrailingZeros(double value, int decimals)
+    {
+        double truncated = Math.Floor(value * Math.Pow(10, decimals)) / Math.Pow(10, decimals);
+        return truncated.ToString("0." + new string('#', decimals), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static float MeasureActiveCraftHeight(
@@ -2278,26 +2395,46 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private static DefectiveWallRequirements GetDefectiveWallRequirements(AreaData areaData)
     {
-        Improvement mopImprovement = areaData.CurrentStage?.Improvements?.Data?.FirstOrDefault();
-        if (mopImprovement == null && areaData.Template.Stages != null)
-        {
-            mopImprovement = areaData.Template.Stages.Values
-                .Where(stage => stage?.Improvements?.Data != null)
-                .SelectMany(stage => stage.Improvements.Data)
-                .FirstOrDefault();
-        }
+        // Each wall stage has its own mop improvement and dismantle requirements, so follow the current level.
+        int stageLevel = areaData.CurrentLevel + 1;
+        Stage nextStage = null;
+        bool hasNextStage = areaData.Template.Stages != null &&
+            areaData.Template.Stages.TryGetValue(stageLevel, out nextStage) &&
+            nextStage != null;
 
+        Improvement mopImprovement = FindPendingImprovement(areaData.CurrentStage) ??
+            (hasNextStage ? FindPendingImprovement(nextStage) : null);
         ItemRequirement mopItem = mopImprovement?.Requirements?.OfType<ItemRequirement>().FirstOrDefault();
-        bool floorMopped = mopImprovement?.Completed ?? false;
+        bool floorMopped = mopImprovement == null;
+
         var dismantleItems = new List<ItemRequirement>();
-        if (areaData.Template.Stages != null &&
-            areaData.Template.Stages.TryGetValue(4, out Stage dismantleStage))
+        if (hasNextStage)
         {
-            dismantleItems.AddRange(dismantleStage.Requirements?.OfType<ItemRequirement>()
+            dismantleItems.AddRange(nextStage.Requirements?.OfType<ItemRequirement>()
                 ?? Enumerable.Empty<ItemRequirement>());
         }
 
-        return new DefectiveWallRequirements(floorMopped, mopItem, dismantleItems);
+        var futureStages = new List<KeyValuePair<int, List<ItemRequirement>>>();
+        if (areaData.Template.Stages != null)
+        {
+            foreach (KeyValuePair<int, Stage> futureStage in areaData.Template.Stages
+                .Where(stage => stage.Value != null && stage.Key > stageLevel)
+                .OrderBy(stage => stage.Key))
+            {
+                futureStages.Add(new KeyValuePair<int, List<ItemRequirement>>(
+                    futureStage.Key,
+                    (futureStage.Value.Requirements?.OfType<ItemRequirement>()
+                        ?? Enumerable.Empty<ItemRequirement>()).ToList()));
+            }
+        }
+
+        return new DefectiveWallRequirements(floorMopped, mopItem, dismantleItems, hasNextStage ? stageLevel : 0, futureStages);
+    }
+
+    private static Improvement FindPendingImprovement(Stage stage)
+    {
+        return stage?.Improvements?.Data?.FirstOrDefault(improvement =>
+            improvement != null && !improvement.Completed);
     }
 
     private static float MeasureActiveCraftWidth(ActiveCraft craft, float itemWidth, float timeWidth)
@@ -2416,7 +2553,8 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         string itemName,
         string countText,
         bool showName,
-        bool? completionStatus = null)
+        bool? completionStatus = null,
+        bool compactCount = false)
     {
         const float cardPadding = 4f;
         const float iconSize = 68f;
@@ -2465,7 +2603,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
                 DrawOutlinedLabel(
                     new Rect(cardRect.x + 2f, textTop, cardRect.width - 4f, textHeight),
                     countText,
-                    _tooltipCountStyle);
+                    compactCount ? _tooltipMoneyCountStyle : _tooltipCountStyle);
             }
             else
             {
@@ -2504,6 +2642,8 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         _tooltipBodyStyle = CreateTooltipStyle(15, TextAnchor.MiddleCenter);
         _raidItemTooltipBodyStyle = CreateTooltipStyle(18, TextAnchor.MiddleLeft);
         _tooltipCountStyle = CreateTooltipStyle(21, TextAnchor.MiddleCenter);
+        _tooltipMoneyCountStyle = CreateTooltipStyle(13, TextAnchor.MiddleCenter);
+        _tooltipMoneyCountStyle.wordWrap = false;
         _tooltipTimerStyle = CreateTooltipStyle(20, TextAnchor.MiddleCenter);
         _tooltipProgressStyle = CreateTooltipStyle(25, TextAnchor.MiddleCenter);
     }
