@@ -35,7 +35,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private const string PluginId = "com.heroiclarvy.hideoutwedeserveuiimprovements";
     private const string PluginName = "Hideout We Deserve - UI Improvements";
-    private const string PluginVersion = "1.2.0";
+    private const string PluginVersion = "1.4.0";
     private const float HoverItemGap = 4.5f;
     private const float HoverProgressWidth = 104f;
     private const float RaidItemMarkerSize = 18f;
@@ -407,6 +407,24 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
             AccessTools.Method(typeof(HideoutScreenOverlay), nameof(HideoutScreenOverlay.Show)),
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnHideoutScreenShown)));
         _harmony.Patch(
+            AccessTools.Method(typeof(AreaScreenSubstrate), nameof(AreaScreenSubstrate.Close)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnAreaSubstrateClosed)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(AreaScreenSubstrate), nameof(AreaScreenSubstrate.Close)),
+            prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(SkipSubstrateCloseForFlea)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(ProduceView), nameof(ProduceView.BuyMaterials)),
+            prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnBuyMaterialsClicked)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(HideoutProductionRequirementView), nameof(HideoutProductionRequirementView.Show)),
+            prefix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(ForceRequirementStatusVisible)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(ProduceView), nameof(ProduceView.UpdateButtonsActiveness)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnProduceViewButtonsUpdated)));
+        _harmony.Patch(
+            AccessTools.Method(typeof(ProduceView), nameof(ProduceView.Close)),
+            postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnProduceViewClosed)));
+        _harmony.Patch(
             AccessTools.Method(typeof(AreaWorldPanel), nameof(AreaWorldPanel.PointerEnterHandler)),
             postfix: new HarmonyMethod(typeof(HideoutWeDeserveUIImprovementsPlugin), nameof(OnWorldPanelPointerEntered)));
         _harmony.Patch(
@@ -563,6 +581,8 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
 
     private void Update()
     {
+        ProcessCraftQueue();
+
         if (!_hasLoadedUpgradeItemNeeds &&
             Time.realtimeSinceStartup >= _nextUpgradeItemNeedsLoadRetryAt)
         {
@@ -581,6 +601,7 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
     private void OnGUI()
     {
         RefreshClaimAllButton();
+        DrawCraftQueuePanel();
         DrawWorldPanelTooltip();
         if (_showUpgradeItemTooltipsOnHover.Value)
         {
@@ -656,35 +677,11 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         _claimAllButton.Interactable = false;
         try
         {
-            HideoutRepresentation hideout = Singleton<HideoutRepresentation>.Instance;
             foreach (ItemsProducerBase producer in GetProducersWithCompletedItems())
             {
-                // Each claim clears one scheme, so keep asking the storage for the next ready scheme.
-                while (producer.HasCompletedItems)
+                if (!await ClaimProducerItems(producer))
                 {
-                    string schemeId = producer.CompleteItemsStorage.FindCompleteItems().Item1;
-                    if (string.IsNullOrEmpty(schemeId))
-                    {
-                        break;
-                    }
-
-                    if (!await hideout.GetProducedItems(producer, schemeId, false))
-                    {
-                        return;
-                    }
-
-                    // Mirrors ProductionPanel.GetProducedItems, which clears the claimed scheme on every producer.
-                    List<ItemsProducerBase> areaProducers =
-                        hideout.ProductionController.GetAreaProducers(producer.AreaData) ?? new List<ItemsProducerBase> { producer };
-                    foreach (ItemsProducerBase areaProducer in areaProducers)
-                    {
-                        areaProducer.GetItems(schemeId);
-                    }
-
-                    if (producer.CompleteItemsStorage.GetItemsCount(schemeId) > 0)
-                    {
-                        break;
-                    }
+                    return;
                 }
             }
         }
@@ -699,9 +696,726 @@ public sealed class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlugin
         }
     }
 
+    private static async Task<bool> ClaimProducerItems(ItemsProducerBase producer)
+    {
+        HideoutRepresentation hideout = Singleton<HideoutRepresentation>.Instance;
+        // Each claim clears one scheme, so keep asking the storage for the next ready scheme.
+        while (producer.HasCompletedItems)
+        {
+            string schemeId = producer.CompleteItemsStorage.FindCompleteItems().Item1;
+            if (string.IsNullOrEmpty(schemeId))
+            {
+                break;
+            }
+
+            if (!await hideout.GetProducedItems(producer, schemeId, false))
+            {
+                return false;
+            }
+
+            // Mirrors ProductionPanel.GetProducedItems, which clears the claimed scheme on every producer.
+            List<ItemsProducerBase> areaProducers =
+                hideout.ProductionController.GetAreaProducers(producer.AreaData) ?? new List<ItemsProducerBase> { producer };
+            foreach (ItemsProducerBase areaProducer in areaProducers)
+            {
+                areaProducer.GetItems(schemeId);
+            }
+
+            if (producer.CompleteItemsStorage.GetItemsCount(schemeId) > 0)
+            {
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    private sealed class QueuedCraft
+    {
+        public EAreaType Area;
+        public string SchemeId;
+    }
+
+    private static readonly List<QueuedCraft> CraftQueue = new List<QueuedCraft>();
+    private static readonly HashSet<ProduceView> ActiveProduceViews = new HashSet<ProduceView>();
+    private static readonly Dictionary<ProduceView, DefaultUIButton> QueueButtons =
+        new Dictionary<ProduceView, DefaultUIButton>();
+    private static bool _isProcessingQueue;
+    private static float _nextQueueProcessAt;
+    private static string _loadedQueueProfileId;
+
+    private static string GetQueueFilePath(string profileId)
+    {
+        return System.IO.Path.Combine(BepInEx.Paths.ConfigPath, $"HideoutWeDeserveUIImprovements.queue.{profileId}.txt");
+    }
+
+    private static string GetCurrentProfileId()
+    {
+        return Singleton<HideoutRepresentation>.Instantiated
+            ? Singleton<HideoutRepresentation>.Instance._session?.Profile?.Id
+            : null;
+    }
+
+    // The queue is stored beside the BepInEx config, never in the game profile.
+    private static void EnsureQueueLoaded()
+    {
+        string profileId = GetCurrentProfileId();
+        if (string.IsNullOrEmpty(profileId) || profileId == _loadedQueueProfileId)
+        {
+            return;
+        }
+
+        _loadedQueueProfileId = profileId;
+        CraftQueue.Clear();
+        string path = GetQueueFilePath(profileId);
+        if (!System.IO.File.Exists(path))
+        {
+            return;
+        }
+
+        foreach (string line in System.IO.File.ReadAllLines(path))
+        {
+            string[] parts = line.Split('|');
+            if (parts.Length == 2 && Enum.TryParse(parts[0], out EAreaType area) && !string.IsNullOrEmpty(parts[1]))
+            {
+                CraftQueue.Add(new QueuedCraft { Area = area, SchemeId = parts[1] });
+            }
+        }
+    }
+
+    private static void SaveQueue()
+    {
+        if (string.IsNullOrEmpty(_loadedQueueProfileId))
+        {
+            return;
+        }
+
+        try
+        {
+            System.IO.File.WriteAllLines(
+                GetQueueFilePath(_loadedQueueProfileId),
+                CraftQueue.Select(entry => $"{entry.Area}|{entry.SchemeId}"));
+        }
+        catch (Exception exception)
+        {
+            _instance.Logger.LogWarning($"Could not save the craft queue: {exception.Message}");
+        }
+    }
+
+    private static bool TryFindProducer(EAreaType area, string schemeId, out ItemsProducerBase producer, out ProductionScheme scheme)
+    {
+        producer = null;
+        scheme = null;
+        if (!Singleton<HideoutRepresentation>.Instantiated)
+        {
+            return false;
+        }
+
+        HideoutRepresentation hideout = Singleton<HideoutRepresentation>.Instance;
+        AreaData areaData = hideout.AreaDatas.FirstOrDefault(data => data?.Template?.Type == area);
+        List<ItemsProducerBase> producers = areaData == null
+            ? null
+            : hideout.ProductionController?.GetAreaProducers(areaData);
+        if (producers == null)
+        {
+            return false;
+        }
+
+        foreach (ItemsProducerBase candidate in producers)
+        {
+            if (candidate?.Schemes != null &&
+                candidate.Schemes.TryGetValue(schemeId, out BaseHideoutScheme baseScheme) &&
+                baseScheme is ProductionScheme productionScheme)
+            {
+                producer = candidate;
+                scheme = productionScheme;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // While a station is busy the game dims recipes and hides ingredient counts; keep them readable.
+    private static void ForceRequirementStatusVisible(ref bool canStartProduction)
+    {
+        canStartProduction = true;
+    }
+
+    private static void OnProduceViewButtonsUpdated(ProduceView __instance)
+    {
+        if (__instance == null || __instance.Producer == null || __instance.Scheme == null || __instance._startButton == null)
+        {
+            return;
+        }
+
+        if (__instance._viewCanvas != null)
+        {
+            __instance._viewCanvas.alpha = 1f;
+            __instance._viewCanvas.interactable = true;
+        }
+
+        EnsureQueueLoaded();
+        ActiveProduceViews.Add(__instance);
+        if (!QueueButtons.TryGetValue(__instance, out DefaultUIButton button) || button == null)
+        {
+            DefaultUIButton startButton = __instance._startButton;
+            button = UnityEngine.Object.Instantiate(startButton, startButton.transform.parent, false);
+            button.name = "QueueCraftButton";
+            button.transform.SetSiblingIndex(startButton.transform.GetSiblingIndex() + 1);
+            button.OnClick.AddListener(() => QueueCraft(__instance));
+            QueueButtons[__instance] = button;
+        }
+
+        ItemsProducerBase producer = __instance.Producer;
+        string schemeId = __instance.Scheme._id;
+        bool busy = !producer.CanStartByProductionCount();
+        bool eligible = (busy || producer.ProducingItems.ContainsKey(schemeId)) &&
+            producer.CompleteItemsStorage.GetItemsCount(schemeId) == 0 &&
+            producer.GetProductionState(schemeId) != EProductionState.Error;
+        if (eligible)
+        {
+            // The disabled START button is replaced by QUEUE while the station can't take another craft.
+            __instance._startButton.gameObject.SetActive(false);
+        }
+
+        int queued = CraftQueue.Count(entry => entry.Area == producer.AreaType && entry.SchemeId == schemeId);
+        string label = queued > 0 ? $"QUEUE ({queued})" : "QUEUE";
+        if (button.HeaderText != label)
+        {
+            button.SetRawText(label, button.HeaderSize);
+        }
+
+        button.SetTooltips(string.Empty, string.Empty);
+        button.Interactable = true;
+        button.gameObject.SetActive(eligible);
+    }
+
+    private static void OnProduceViewClosed(ProduceView __instance)
+    {
+        ActiveProduceViews.Remove(__instance);
+    }
+
+    private static void QueueCraft(ProduceView view)
+    {
+        CraftQueue.Add(new QueuedCraft { Area = view.Producer.AreaType, SchemeId = view.Scheme._id });
+        SaveQueue();
+        RefreshQueueNeeds(true);
+        OnProduceViewButtonsUpdated(view);
+    }
+
+    private sealed class QueueNeed
+    {
+        public string TemplateId;
+        public string Name;
+        public int Owned;
+        public int Needed;
+        public bool Buyable;
+        public bool IsMoney;
+    }
+
+    private static readonly List<QueueNeed> QueueNeeds = new List<QueueNeed>();
+    private static readonly HashSet<QueuedCraft> UnaffordableQueueEntries = new HashSet<QueuedCraft>();
+    private static float _nextQueueNeedsAt;
+    private static bool _suppressQueuePrune;
+    private static EAreaType? _reopenArea;
+
+    // Compares the stash against everything queued, in queue order, so shared ingredients aren't counted twice.
+    private static void RefreshQueueNeeds(bool force)
+    {
+        if (!force && Time.realtimeSinceStartup < _nextQueueNeedsAt)
+        {
+            return;
+        }
+
+        _nextQueueNeedsAt = Time.realtimeSinceStartup + 0.5f;
+        QueueNeeds.Clear();
+        UnaffordableQueueEntries.Clear();
+        var needsByTemplate = new Dictionary<string, QueueNeed>();
+        var committed = new Dictionary<string, int>();
+        foreach (QueuedCraft entry in CraftQueue)
+        {
+            if (!TryFindProducer(entry.Area, entry.SchemeId, out _, out ProductionScheme scheme))
+            {
+                continue;
+            }
+
+            ItemRequirement[] requirements = scheme.RequiredItems.ToArray();
+            UpdateUpgradeRequirements(requirements);
+            bool affordable = true;
+            foreach (ItemRequirement requirement in requirements)
+            {
+                string templateId = requirement.TemplateId.ToString();
+                int owned = Mathf.Max(0, requirement.UserItemsCount);
+                bool isTool = requirement is ToolRequirement;
+                committed.TryGetValue(templateId, out int used);
+                if ((isTool ? 0 : used) + requirement.IntCount > owned)
+                {
+                    affordable = false;
+                }
+
+                if (!needsByTemplate.TryGetValue(templateId, out QueueNeed need))
+                {
+                    need = new QueueNeed
+                    {
+                        TemplateId = templateId,
+                        Name = requirement.ItemName,
+                        Owned = owned,
+                        Buyable = !requirement.IsSpawnedInSession,
+                        IsMoney = MoneyTemplateIds.Contains(templateId)
+                    };
+                    needsByTemplate.Add(templateId, need);
+                }
+
+                need.Needed = isTool ? Mathf.Max(need.Needed, requirement.IntCount) : need.Needed + requirement.IntCount;
+            }
+
+            if (!affordable)
+            {
+                UnaffordableQueueEntries.Add(entry);
+                continue;
+            }
+
+            foreach (ItemRequirement requirement in requirements)
+            {
+                if (requirement is not ToolRequirement)
+                {
+                    string templateId = requirement.TemplateId.ToString();
+                    committed.TryGetValue(templateId, out int used);
+                    committed[templateId] = used + requirement.IntCount;
+                }
+            }
+        }
+
+        QueueNeeds.AddRange(needsByTemplate.Values.Where(need => need.Needed > need.Owned));
+    }
+
+    private static void PruneUnaffordableQueue()
+    {
+        EnsureQueueLoaded();
+        if (CraftQueue.Count == 0)
+        {
+            return;
+        }
+
+        RefreshQueueNeeds(true);
+        if (CraftQueue.RemoveAll(UnaffordableQueueEntries.Contains) > 0)
+        {
+            SaveQueue();
+            RefreshQueueNeeds(true);
+        }
+    }
+
+    private static void OnAreaSubstrateClosed()
+    {
+        if (!_suppressQueuePrune)
+        {
+            PruneUnaffordableQueue();
+        }
+    }
+
+    // Opening the flea market closes the station menu, so remember where to return and keep the queue meanwhile.
+    // When crafts are queued, the per-craft buy button shops for the whole queue instead of a single craft.
+    private static bool OnBuyMaterialsClicked(ProduceView __instance)
+    {
+        if (__instance?.Producer == null)
+        {
+            return true;
+        }
+
+        EAreaType area = __instance.Producer.AreaType;
+        if (CraftQueue.Count == 0)
+        {
+            _reopenArea = area;
+            _suppressQueuePrune = true;
+            return true;
+        }
+
+        var extra = new Dictionary<string, int>();
+        foreach (ItemRequirement requirement in __instance.Scheme?.RequiredItems ?? Enumerable.Empty<ItemRequirement>())
+        {
+            if (!requirement.Fulfilled && !requirement.IsSpawnedInSession)
+            {
+                extra[requirement.TemplateId.ToString()] = requirement.IntCount - requirement.UserItemsCount;
+            }
+        }
+
+        if (OpenQueueShoppingList(area, extra))
+        {
+            return false;
+        }
+
+        _reopenArea = area;
+        _suppressQueuePrune = true;
+        return true;
+    }
+
+    // The flea market replaces the hideout screen, which would close the station menu and rebuild every craft on return.
+    // Leaving the persistent substrate alone lets it come back untouched.
+    private static bool SkipSubstrateCloseForFlea()
+    {
+        return !(_reopenArea.HasValue && _openStationMenuWithoutZoom.Value);
+    }
+
+    private static bool TryKeepStationOpen(HideoutScreenOverlay overlay, EAreaType area)
+    {
+        if (!_openStationMenuWithoutZoom.Value ||
+            AccessTools.Field(typeof(HideoutScreenOverlay), "_areaSubstrate")?.GetValue(overlay) is not AreaScreenSubstrate substrate ||
+            !substrate.gameObject.activeSelf ||
+            AccessTools.Field(typeof(AreaScreenSubstrate), "_dataToShow")?.GetValue(substrate) is not AreaData shown ||
+            shown.Template?.Type != area)
+        {
+            return false;
+        }
+
+        AccessTools.Field(typeof(HideoutScreenOverlay), "_selectedData")?.SetValue(overlay, shown);
+        _suppressQueuePrune = false;
+        return true;
+    }
+
+    private static bool OpenQueueShoppingList(EAreaType area, Dictionary<string, int> extra = null)
+    {
+        RefreshQueueNeeds(true);
+        var items = QueueNeeds
+            .Where(need => need.Buyable)
+            .ToDictionary(need => need.TemplateId, need => need.Needed - need.Owned);
+        foreach (KeyValuePair<string, int> pair in extra ?? new Dictionary<string, int>())
+        {
+            items[pair.Key] = items.TryGetValue(pair.Key, out int queued) ? Math.Max(queued, pair.Value) : pair.Value;
+        }
+
+        if (items.Count == 0)
+        {
+            return false;
+        }
+
+        _reopenArea = area;
+        _suppressQueuePrune = true;
+        ItemUiContext.Instance.ExternalRagfairSearch(new EFT.UI.Ragfair.RagfairSearch(
+            EFT.UI.Ragfair.EFilterType.BuildItems,
+            new EFT.UI.Ragfair.BuildItemSearchValue { BuildName = string.Empty, BuildItems = items, BuildCount = 1 }));
+        return true;
+    }
+
+    private static async Task ReopenStationAsync(HideoutScreenOverlay overlay, EAreaType area)
+    {
+        try
+        {
+            await Task.Delay(500);
+            AreaData areaData = Singleton<HideoutRepresentation>.Instantiated
+                ? Singleton<HideoutRepresentation>.Instance.AreaDatas.FirstOrDefault(data => data?.Template?.Type == area)
+                : null;
+            if (overlay != null && areaData != null)
+            {
+                FieldInfo substrateField = AccessTools.Field(typeof(HideoutScreenOverlay), "_areaSubstrate");
+                if (_openStationMenuWithoutZoom.Value &&
+                    substrateField?.GetValue(overlay) is AreaScreenSubstrate substrate)
+                {
+                    substrate.SelectArea(areaData);
+                }
+                else
+                {
+                    await overlay.AreaSelected(areaData, false);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            _instance.Logger.LogWarning($"Could not reopen the station menu: {exception.Message}");
+        }
+        finally
+        {
+            _suppressQueuePrune = false;
+        }
+    }
+
+    private static bool DrawQueuePanelButton(Rect rect, string text)
+    {
+        bool hovered = rect.Contains(Event.current.mousePosition);
+        Color previousColor = GUI.color;
+        GUI.color = hovered ? new Color(0.30f, 0.38f, 0.45f, 0.95f) : new Color(0.12f, 0.16f, 0.2f, 0.95f);
+        GUI.DrawTexture(rect, Texture2D.whiteTexture);
+        GUI.color = previousColor;
+        DrawBorder(rect, new Color(0.68f, 0.78f, 0.86f, 0.82f), 1.5f);
+        DrawOutlinedLabel(rect, text, _tooltipBodyStyle);
+        if (hovered && Event.current.type == EventType.MouseDown && Event.current.button == 0)
+        {
+            Event.current.Use();
+            return true;
+        }
+
+        return false;
+    }
+
+    // Returns the station window bounds in IMGUI coordinates (origin top-left).
+    private static bool TryGetCraftWindowRect(ProduceView view, out Rect rect)
+    {
+        rect = default;
+        RectTransform window = view.GetComponentInParent<AreaScreenSubstrate>()?._contentLayout?.transform as RectTransform;
+        if (window == null)
+        {
+            return false;
+        }
+
+        Canvas canvas = window.GetComponentInParent<Canvas>();
+        Camera camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay ? canvas.worldCamera : null;
+        var corners = new Vector3[4];
+        window.GetWorldCorners(corners);
+        Vector2 bottomLeft = RectTransformUtility.WorldToScreenPoint(camera, corners[0]);
+        Vector2 topRight = RectTransformUtility.WorldToScreenPoint(camera, corners[2]);
+        rect = Rect.MinMaxRect(
+            bottomLeft.x,
+            Screen.height - topRight.y,
+            topRight.x,
+            Screen.height - bottomLeft.y);
+        return rect.width > 1f && rect.height > 1f;
+    }
+
+    private static void DrawCraftQueuePanel()
+    {
+        // Views are only inactive while the hideout is hidden (e.g. on the flea market), so keep them for the return.
+        ActiveProduceViews.RemoveWhere(view => view == null || view.Producer == null);
+        ProduceView visibleView = ActiveProduceViews.FirstOrDefault(view => view.isActiveAndEnabled);
+        if (visibleView == null)
+        {
+            return;
+        }
+
+        EAreaType area = visibleView.Producer.AreaType;
+        List<QueuedCraft> entries = CraftQueue.Where(entry => entry.Area == area).ToList();
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        RefreshQueueNeeds(false);
+        EnsureTooltipStyles();
+        const float width = 340f;
+        const float rowHeight = 30f;
+        const float padding = 10f;
+        bool hasMissing = QueueNeeds.Count > 0;
+        bool canBuy = QueueNeeds.Any(need => need.Buyable);
+        int rows = entries.Count + 1 +
+            (hasMissing ? QueueNeeds.Count + 1 + (canBuy ? 1 : 0) : 0);
+        float height = padding * 2f + rowHeight * rows;
+        var panel = new Rect(20f, Screen.height - height - 120f, width, height);
+        if (TryGetCraftWindowRect(visibleView, out Rect window))
+        {
+            const float margin = 10f;
+            panel.x = Mathf.Clamp(window.x + margin, 0f, Mathf.Max(0f, Screen.width - width));
+            panel.y = Mathf.Clamp(window.yMax - height - margin, 0f, Mathf.Max(0f, Screen.height - height));
+        }
+
+        DrawSectionPanel(panel);
+        DrawOutlinedLabel(
+            new Rect(panel.x + padding, panel.y + padding, width - padding * 2f, rowHeight),
+            "Queued crafts:",
+            _tooltipSectionStyle);
+
+        if (hasMissing)
+        {
+            float missingY = panel.y + padding + rowHeight * (entries.Count + 1);
+            DrawOutlinedLabel(
+                new Rect(panel.x + padding, missingY, width - padding * 2f, rowHeight),
+                "Missing ingredients:",
+                _tooltipSectionStyle);
+            for (int i = 0; i < QueueNeeds.Count; i++)
+            {
+                QueueNeed need = QueueNeeds[i];
+                string counts = need.IsMoney
+                    ? $"{FormatMoneyAmount(need.Owned)}/{FormatMoneyAmount(need.Needed)}"
+                    : $"{need.Owned}/{need.Needed}";
+                DrawOutlinedLabel(
+                    new Rect(panel.x + padding, missingY + rowHeight * (i + 1), width - padding * 2f, rowHeight),
+                    $"{need.Name}: {counts}",
+                    _raidItemTooltipBodyStyle);
+            }
+
+            if (canBuy)
+            {
+                var buyRect = new Rect(
+                    panel.x + padding,
+                    missingY + rowHeight * (QueueNeeds.Count + 1) + 3f,
+                    width - padding * 2f,
+                    rowHeight - 6f);
+                if (DrawQueuePanelButton(buyRect, "BUY MISSING ON FLEA MARKET"))
+                {
+                    OpenQueueShoppingList(area);
+                }
+            }
+        }
+
+        QueuedCraft toCancel = null;
+        for (int i = 0; i < entries.Count; i++)
+        {
+            float rowY = panel.y + padding + rowHeight * (i + 1);
+            string name = TryFindProducer(entries[i].Area, entries[i].SchemeId, out _, out ProductionScheme scheme)
+                ? (scheme.endProduct.ToString() + " ShortName").Localized()
+                : entries[i].SchemeId;
+            DrawOutlinedLabel(
+                new Rect(panel.x + padding, rowY, width - padding * 2f - rowHeight, rowHeight),
+                $"{i + 1}. {name}",
+                _raidItemTooltipBodyStyle);
+
+            var cancelRect = new Rect(panel.xMax - padding - 24f, rowY + 3f, 24f, 24f);
+            bool hovered = cancelRect.Contains(Event.current.mousePosition);
+            Color previousColor = GUI.color;
+            GUI.color = hovered ? new Color(0.9f, 0.2f, 0.15f, 1f) : new Color(0.5f, 0.1f, 0.08f, 0.9f);
+            GUI.DrawTexture(cancelRect, Texture2D.whiteTexture);
+            GUI.color = previousColor;
+            DrawOutlinedLabel(cancelRect, "X", _tooltipBodyStyle);
+            if (hovered && Event.current.type == EventType.MouseDown && Event.current.button == 0)
+            {
+                toCancel = entries[i];
+                Event.current.Use();
+            }
+        }
+
+        if (toCancel != null)
+        {
+            CraftQueue.Remove(toCancel);
+            SaveQueue();
+            RefreshQueueNeeds(true);
+            foreach (ProduceView view in ActiveProduceViews.ToList())
+            {
+                OnProduceViewButtonsUpdated(view);
+            }
+        }
+    }
+
+    private static void ProcessCraftQueue()
+    {
+        if (_isProcessingQueue ||
+            Time.realtimeSinceStartup < _nextQueueProcessAt ||
+            !Singleton<HideoutRepresentation>.Instantiated)
+        {
+            return;
+        }
+
+        _nextQueueProcessAt = Time.realtimeSinceStartup + 1f;
+        EnsureQueueLoaded();
+        if (CraftQueue.Count > 0)
+        {
+            _ = ProcessCraftQueueAsync();
+        }
+    }
+
+    private static async Task ProcessCraftQueueAsync()
+    {
+        _isProcessingQueue = true;
+        try
+        {
+            foreach (EAreaType area in CraftQueue.Select(entry => entry.Area).Distinct().ToList())
+            {
+                QueuedCraft entry = CraftQueue.FirstOrDefault(queued => queued.Area == area);
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                if (!TryFindProducer(area, entry.SchemeId, out ItemsProducerBase producer, out ProductionScheme scheme))
+                {
+                    continue;
+                }
+
+                if (!producer.CanStartByProductionCount())
+                {
+                    if (producer.HasCompletedItems)
+                    {
+                        await ClaimProducerItems(producer);
+                    }
+
+                    continue;
+                }
+
+                if (!producer.CanStart ||
+                    !producer.CanStartScheme(scheme) ||
+                    producer.GetErrorsCountRaw() > 0 ||
+                    producer.ProducingItems.ContainsKey(scheme._id))
+                {
+                    continue;
+                }
+
+                if (!HasQueuedIngredients(scheme))
+                {
+                    // Keep the entry while the player may still be buying ingredients.
+                    if (_suppressQueuePrune || ActiveProduceViews.Any(view => view != null && view.isActiveAndEnabled))
+                    {
+                        continue;
+                    }
+
+                    CraftQueue.Remove(entry);
+                    SaveQueue();
+                    _instance.Logger.LogWarning(
+                        $"Removed queued craft '{scheme._id}' because the required items are not available.");
+                    continue;
+                }
+
+                CraftQueue.Remove(entry);
+                SaveQueue();
+                if (!TryStartQueuedCraft(producer, scheme))
+                {
+                    _instance.Logger.LogWarning(
+                        $"Skipped queued craft '{scheme._id}' because the required items are no longer available.");
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            _instance.Logger.LogError($"Craft queue processing failed: {exception}");
+        }
+        finally
+        {
+            _isProcessingQueue = false;
+        }
+    }
+
+    private static bool HasQueuedIngredients(ProductionScheme scheme)
+    {
+        ItemRequirement[] requirements = scheme.RequiredItems.ToArray();
+        UpdateUpgradeRequirements(requirements);
+        return requirements.All(requirement => requirement.UserItemsCount >= requirement.IntCount);
+    }
+
+    // Starts the craft through the same session call as the game's START button, without its item-selection window.
+    private static bool TryStartQueuedCraft(ItemsProducerBase producer, ProductionScheme scheme)
+    {
+        HideoutRepresentation hideout = Singleton<HideoutRepresentation>.Instance;
+        ItemRequirement[] requirements = scheme.RequiredItems.ToArray();
+        if (!HasQueuedIngredients(scheme))
+        {
+            return false;
+        }
+
+        var items = new List<JsonType.ItemToHandover>();
+        var tools = new List<JsonType.ItemToHandover>();
+        foreach (HideoutItemReference reference in hideout.GetItemReferences(requirements))
+        {
+            (reference.IsTool ? tools : items).Add(new JsonType.ItemToHandover(reference.Item, reference.Count));
+        }
+
+        hideout._session.StartSingleProduction(scheme._id, items, tools);
+        producer.StartProducing(scheme);
+        return true;
+    }
+
     private static void OnHideoutScreenShown(HideoutScreenOverlay __instance)
     {
         EnsureClaimAllButton(__instance);
+        if (_reopenArea.HasValue)
+        {
+            EAreaType area = _reopenArea.Value;
+            _reopenArea = null;
+            if (!TryKeepStationOpen(__instance, area))
+            {
+                _ = ReopenStationAsync(__instance, area);
+            }
+        }
+        else
+        {
+            _suppressQueuePrune = false;
+            PruneUnaffordableQueue();
+        }
         ApplyBottomBarVisibility(__instance);
         RefreshUpgradeItemNeedsFromHideout();
         RefreshRaidItemMarkers();
