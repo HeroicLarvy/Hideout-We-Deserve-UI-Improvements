@@ -11,8 +11,8 @@ The first in a series of hideout QoL and redesign mods. SPT 4.1.6
 - Item markers for current and future upgrade requirements
 - Item markers for favorited craft ingredients
 - Craft folders (up to 5) - toggle: `EnableFolders`
-- Active craft bar - toggle: `EnableQueueAndActiveCraftBar`
-- Craft queue - toggle: `EnableQueueAndActiveCraftBar`
+- Active craft bar - toggle: `EnableActiveCraftBar`
+
 ## Install
 
 Download `Hideout-We-Deserve-UI-Improvements-2.0.0.zip` from [Releases](https://github.com/HeroicLarvy/Hideout-We-Deserve-UI-Improvements/releases), then extract it into your SPT folder. The DLL is already inside `BepInEx\plugins`.

@@ -28,7 +28,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     {
         None,
         FolderMenu,
-        CraftMenu,
         Rename
     }
 
@@ -70,7 +69,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     private static FolderPopup _folderPopup;
     private static Vector2 _popupPosition;
     private static int _popupFolderIndex;
-    private static string _popupSchemeId;
     private static string _renameText;
     private static bool _renameNeedsFocus;
     private static string _dragCandidateSchemeId;
@@ -160,20 +158,21 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         RectTransform viewport = scroll == null
             ? null
             : scroll.viewport != null ? scroll.viewport : scroll.transform as RectTransform;
-        if (viewport == null || ReservedViewports.ContainsKey(viewport) || !TryGetScreenRect(viewport, out Rect viewportRect))
+        if (viewport == null || !TryGetScreenRect(viewport, out Rect viewportRect))
         {
             return;
         }
 
-        float neededPixels = bar.yMax - viewportRect.y;
-        if (neededPixels <= 0f)
+        if (!ReservedViewports.TryGetValue(viewport, out Vector2 originalOffset))
         {
-            return;
+            originalOffset = viewport.offsetMax;
+            ReservedViewports[viewport] = originalOffset;
         }
 
-        float units = neededPixels / Mathf.Max(0.01f, viewport.lossyScale.y);
-        ReservedViewports[viewport] = viewport.offsetMax;
-        viewport.offsetMax = new Vector2(viewport.offsetMax.x, viewport.offsetMax.y - units);
+        float scale = Mathf.Max(0.01f, viewport.lossyScale.y);
+        float originalTop = viewportRect.y - (originalOffset.y - viewport.offsetMax.y) * scale;
+        float units = Mathf.Max(0f, bar.yMax - originalTop) / scale;
+        viewport.offsetMax = new Vector2(originalOffset.x, originalOffset.y - units);
     }
 
     private static void RestoreFolderBarSpace()
@@ -396,7 +395,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     private static void ClosePopup()
     {
         _folderPopup = FolderPopup.None;
-        _popupSchemeId = null;
     }
 
     private static void ResetFolderUi()
@@ -488,7 +486,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         ProductionPanel panel = CraftFolderPanels.FirstOrDefault(candidate =>
             candidate.isActiveAndEnabled && GetCraftViewList(candidate) != null);
         EAreaType? areaOrNull = GetPanelArea(panel);
-        if (!_enableCraftFolders.Value && !_enableCraftQueueBar.Value)
+        if (!_enableCraftFolders.Value && !_enableActiveCraftBar.Value)
         {
             ResetFolderUi();
             RestoreFolderBarSpace();
@@ -519,9 +517,11 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
 
         // The bar sits flush with the top edge of the station window, level with its header row.
         bool foldersEnabled = _enableCraftFolders.Value;
-        bool statusEnabled = _enableCraftQueueBar.Value;
+        bool statusEnabled = _enableActiveCraftBar.Value;
         float barHeight = foldersEnabled ? FolderBarHeight : 0f;
-        float statusHeight = statusEnabled ? StatusBarHeight : 0f;
+        float statusHeight = statusEnabled
+            ? GetStatusBarHeight(area, viewList, window.height - barHeight - 80f)
+            : 0f;
         var bar = new Rect(window.x, window.y - BarTopNudge, window.width, barHeight);
         var statusBar = new Rect(bar.x, bar.yMax, bar.width, statusHeight);
         ReserveFolderBarSpace(panel, new Rect(bar.x, bar.y, bar.width, barHeight + statusHeight));
@@ -532,7 +532,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
             _isDraggingCraft = false;
             _isDraggingFolder = false;
             _dragFolderIndex = -1;
-            DrawCraftStatusBar(statusBar, area, true, viewList, panel);
+            DrawCraftStatusBar(statusBar, area, viewList, panel);
             return;
         }
 
@@ -544,7 +544,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
 
         if (statusEnabled)
         {
-            DrawCraftStatusBar(statusBar, area, !popupOpen, viewList, panel);
+            DrawCraftStatusBar(statusBar, area, viewList, panel);
         }
 
         // Index -1 is the "Unassigned" tab (far right), 0..n-1 are folders, n is the add button.
@@ -631,22 +631,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
             }
         }
 
-        List<(ProductionScheme Scheme, Rect Rect)> craftButtons = GetCraftFolderButtons(viewList, window, statusBar);
-        if (repaint)
-        {
-            foreach ((ProductionScheme scheme, Rect rect) in craftButtons)
-            {
-                bool inFolder = folders.Any(folder => folder.Schemes.Contains(scheme._id));
-                bool hovered = !popupOpen && rect.Contains(mouse);
-                FillRect(rect, hovered ? new Color(0.30f, 0.38f, 0.45f, 0.98f) : new Color(0.12f, 0.16f, 0.2f, 0.95f));
-                Color iconColor = inFolder
-                    ? folders.First(folder => folder.Schemes.Contains(scheme._id)).Color
-                    : new Color(0.8f, 0.82f, 0.85f, 1f);
-                DrawFolderIcon(new Rect(rect.x + 5f, rect.y + 6f, rect.width - 10f, rect.height - 12f), iconColor);
-                DrawBorder(rect, new Color(0.68f, 0.78f, 0.86f, 0.6f), 1f);
-            }
-        }
-
         if (repaint && _isDraggingFolder && _dragFolderIndex >= 0 && _dragFolderIndex < folders.Count)
         {
             string name = folders[_dragFolderIndex].Name;
@@ -667,71 +651,12 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
 
         if (!popupOpen)
         {
-            HandleFolderBarInput(panel, area, viewList, window, folders, hoveredTab, mouse, craftButtons);
+            HandleFolderBarInput(panel, area, viewList, window, folders, hoveredTab, mouse);
         }
         else
         {
             DrawFolderPopup(panel, area, folders);
         }
-    }
-
-    // A folder button sits just left of the favorite / shopping cart buttons of each visible craft.
-    private static List<(ProductionScheme Scheme, Rect Rect)> GetCraftFolderButtons(
-        AsyncViewList<ProductionScheme, ProduceView> viewList,
-        Rect window,
-        Rect bar)
-    {
-        var buttons = new List<(ProductionScheme, Rect)>();
-        foreach (KeyValuePair<ProductionScheme, ProduceView> pair in viewList.Views)
-        {
-            ProduceView view = pair.Value;
-            if (view == null || !view.gameObject.activeInHierarchy)
-            {
-                continue;
-            }
-
-            bool hasFavorite = view._favoriteButton != null && view._favoriteButton.gameObject.activeInHierarchy &&
-                TryGetScreenRect(view._favoriteButton, out Rect favoriteRect);
-            bool hasBuy = view._buyButton != null && view._buyButton.gameObject.activeInHierarchy &&
-                TryGetScreenRect(view._buyButton, out Rect buyRect);
-            Rect reference = default;
-            if (hasFavorite && TryGetScreenRect(view._favoriteButton, out Rect fav))
-            {
-                reference = fav;
-            }
-
-            if (hasBuy && TryGetScreenRect(view._buyButton, out Rect buy))
-            {
-                reference = reference.width > 0f && reference.x < buy.x ? reference : buy;
-            }
-
-            if (reference.width <= 0f)
-            {
-                continue;
-            }
-
-            float size = Mathf.Max(24f, reference.height);
-            var rect = new Rect(reference.x - size - 6f, reference.y + (reference.height - size) / 2f, size, size);
-            // Clip to the scroll viewport so buttons never draw over the footer or the bars.
-            ScrollRect scroll = view.GetComponentInParent<ScrollRect>();
-            RectTransform viewport = scroll == null ? null : scroll.viewport != null ? scroll.viewport : scroll.transform as RectTransform;
-            Rect clip = window;
-            if (viewport != null && TryGetScreenRect(viewport, out Rect viewportRect))
-            {
-                clip = Rect.MinMaxRect(
-                    Mathf.Max(window.xMin, viewportRect.xMin),
-                    Mathf.Max(window.yMin, viewportRect.yMin),
-                    Mathf.Min(window.xMax, viewportRect.xMax),
-                    Mathf.Min(window.yMax, viewportRect.yMax));
-            }
-
-            if (rect.y >= bar.yMax && rect.y >= clip.yMin && rect.yMax <= clip.yMax && rect.x >= clip.xMin)
-            {
-                buttons.Add((pair.Key, rect));
-            }
-        }
-
-        return buttons;
     }
 
     private static void HandleFolderBarInput(
@@ -741,8 +666,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         Rect window,
         List<CraftFolder> folders,
         int hoveredTab,
-        Vector2 mouse,
-        List<(ProductionScheme Scheme, Rect Rect)> craftButtons)
+        Vector2 mouse)
     {
         Event current = Event.current;
 
@@ -794,13 +718,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
                     AddCraftFolder(panel, area);
                     current.Use();
                 }
-                else if (craftButtons.FirstOrDefault(button => button.Rect.Contains(mouse)).Scheme is ProductionScheme clicked)
-                {
-                    _folderPopup = FolderPopup.CraftMenu;
-                    _popupSchemeId = clicked._id;
-                    _popupPosition = mouse;
-                    current.Use();
-                }
                 else if (TryGetCraftUnderMouse(viewList, window, mouse, out ProductionScheme candidate))
                 {
                     _dragCandidateSchemeId = candidate._id;
@@ -821,21 +738,14 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         }
     }
 
-    private static bool DrawPopupRow(Rect rect, string text, Color? swatch = null)
+    private static bool DrawPopupRow(Rect rect, string text)
     {
         Event current = Event.current;
         bool hovered = rect.Contains(current.mousePosition);
         if (current.type == EventType.Repaint)
         {
             FillRect(rect, hovered ? new Color(0.30f, 0.38f, 0.45f, 0.98f) : new Color(0.12f, 0.16f, 0.2f, 0.98f));
-            float textX = rect.x;
-            if (swatch.HasValue)
-            {
-                FillRect(new Rect(rect.x + 6f, rect.y + 7f, 14f, rect.height - 14f), swatch.Value);
-                textX += 24f;
-            }
-
-            DrawOutlinedLabel(new Rect(textX, rect.y, rect.xMax - textX, rect.height), text, _folderNameStyle);
+            DrawOutlinedLabel(rect, text, _folderNameStyle);
         }
 
         if (hovered && IsMouseDown(0))
@@ -848,7 +758,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     }
 
     // Sizes the popup to its widest row so no text is clipped.
-    private static float MeasurePopupWidth(List<CraftFolder> folders)
+    private static float MeasurePopupWidth()
     {
         float widest = 0f;
         void Measure(string text, float extra)
@@ -861,15 +771,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
             case FolderPopup.FolderMenu:
                 Measure("Rename", 20f);
                 Measure("Delete folder", 20f);
-                break;
-            case FolderPopup.CraftMenu:
-                Measure("Remove from folder", 20f);
-                Measure("Create a folder first", 20f);
-                foreach (CraftFolder folder in folders)
-                {
-                    Measure(folder.Schemes.Contains(_popupSchemeId) ? $"{folder.Name} (current)" : folder.Name, 44f);
-                }
-
                 break;
         }
 
@@ -886,22 +787,8 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
             return;
         }
 
-        int rows;
-        switch (_folderPopup)
-        {
-            case FolderPopup.FolderMenu:
-                rows = 3;
-                break;
-            case FolderPopup.CraftMenu:
-                rows = Math.Max(1, folders.Count) + 1;
-                break;
-            default:
-                rows = 3;
-                break;
-        }
-
-        float height = rows * PopupRowHeight + 8f;
-        PopupWidth = MeasurePopupWidth(folders);
+        float height = 3 * PopupRowHeight + 8f;
+        PopupWidth = MeasurePopupWidth();
         var popup = new Rect(
             Mathf.Clamp(_popupPosition.x, 0f, Screen.width - PopupWidth - 4f),
             Mathf.Clamp(_popupPosition.y, 0f, Screen.height - height - 4f),
@@ -968,33 +855,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
                         ClosePopup();
                         return;
                     }
-                }
-
-                break;
-            case FolderPopup.CraftMenu:
-                if (folders.Count == 0)
-                {
-                    DrawOutlinedLabel(new Rect(popup.x + 8f, y, PopupWidth - 16f, PopupRowHeight), "Create a folder first", _folderNameStyle);
-                    y += PopupRowHeight;
-                }
-
-                for (int i = 0; i < folders.Count; i++)
-                {
-                    string label = folders[i].Schemes.Contains(_popupSchemeId) ? $"{folders[i].Name} (current)" : folders[i].Name;
-                    if (DrawPopupRow(new Rect(popup.x + 4f, y, PopupWidth - 8f, PopupRowHeight), label, folders[i].Color))
-                    {
-                        AssignCraftToFolder(panel, area, _popupSchemeId, i);
-                        ClosePopup();
-                        return;
-                    }
-
-                    y += PopupRowHeight;
-                }
-
-                if (DrawPopupRow(new Rect(popup.x + 4f, y, PopupWidth - 8f, PopupRowHeight), "Remove from folder"))
-                {
-                    AssignCraftToFolder(panel, area, _popupSchemeId, -1);
-                    ClosePopup();
                 }
 
                 break;
