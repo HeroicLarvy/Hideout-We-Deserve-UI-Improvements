@@ -13,7 +13,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
 
     private static void OnBonusesPanelShown(BonusesPanel __instance)
     {
-        if (__instance == null || __instance.LevelType != ELevelType.Current)
+        if (IsInRaid() || __instance == null || __instance.LevelType != ELevelType.Current)
         {
             return;
         }
@@ -25,7 +25,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     private static IEnumerator MoveBonusesToHeader(BonusesPanel panel)
     {
         yield return null;
-        if (panel == null)
+        if (IsInRaid() || panel == null || !panel.isActiveAndEnabled)
         {
             yield break;
         }
@@ -54,7 +54,8 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         }
 
         // Content loads asynchronously, so keep fitting the panel to the header while it settles.
-        for (int frame = 0; frame < BonusesHeaderSettleFrames && panel != null; frame++)
+        for (int frame = 0; frame < BonusesHeaderSettleFrames &&
+            !IsInRaid() && panel != null && panel.isActiveAndEnabled; frame++)
         {
             LayoutRebuilder.ForceRebuildLayoutImmediate(rect);
             float width = LayoutUtility.GetPreferredWidth(rect);

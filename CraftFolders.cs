@@ -217,6 +217,11 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
 
     private static void RegisterCraftFolderPanel(ProductionPanel __instance)
     {
+        if (IsInRaid())
+        {
+            return;
+        }
+
         EnsureFoldersLoaded();
         CraftFolderPanels.Add(__instance);
     }
@@ -233,7 +238,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
     private static void FilterSchemesByFolder(ProductionPanel __instance, ref IEnumerable<ProductionScheme> __result)
     {
         EAreaType? area = GetPanelArea(__instance);
-        if (!_enableCraftFolders.Value || area == null || __result == null)
+        if (IsInRaid() || !_enableCraftFolders.Value || area == null || __result == null)
         {
             return;
         }
@@ -268,7 +273,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
         try
         {
             AsyncViewList<ProductionScheme, ProduceView> oldList = GetCraftViewList(panel);
-            if (panel == null || oldList == null)
+            if (IsInRaid() || panel == null || oldList == null)
             {
                 return;
             }
@@ -294,7 +299,10 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin
                 ? panel._decryptionProductionView
                 : panel._produceViewTemplate;
             await panel.ShowProduceView(ItemUiContext.Instance, template, schemes.Length > 1, producer);
-            panel.UpdateViews();
+            if (!IsInRaid() && panel != null && panel.isActiveAndEnabled)
+            {
+                panel.UpdateViews();
+            }
         }
         catch (Exception exception)
         {

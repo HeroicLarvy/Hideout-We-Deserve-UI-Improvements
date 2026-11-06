@@ -80,6 +80,9 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
     private static float _nextUpgradeItemNeedsLoadRetryAt;
     private static bool _upgradeItemNeedsDirty;
     private static bool _hasLoadedUpgradeItemNeeds;
+    private static bool _raidItemMarkersDirty;
+    private static bool _wasInRaid;
+    private static HideoutScreenOverlay _hideoutScreenOverlay;
     private static readonly Dictionary<string, ItemIcon> ItemIcons = new Dictionary<string, ItemIcon>();
     private static readonly Dictionary<string, Item> RecipeOutputItems = new Dictionary<string, Item>();
     private static readonly Dictionary<string, List<UpgradeItemNeed>> CurrentUpgradeItemNeeds =
@@ -89,6 +92,8 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
     private static readonly Dictionary<string, List<FavoriteCraftItemNeed>> FavoriteCraftItemNeeds =
         new Dictionary<string, List<FavoriteCraftItemNeed>>();
     private static readonly HashSet<ItemView> RaidItemViews = new HashSet<ItemView>();
+    private static readonly Dictionary<ItemView, UpgradeMarkerHoverHandler> RaidItemMarkers =
+        new Dictionary<ItemView, UpgradeMarkerHoverHandler>();
     private static readonly HashSet<UpgradeMarkerHoverHandler> RaidItemMarkerHandlers =
         new HashSet<UpgradeMarkerHoverHandler>();
     private static readonly Dictionary<string, Task<Sprite>> TraderAvatarTasks = new Dictionary<string, Task<Sprite>>();
@@ -167,6 +172,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         UnityEngine.EventSystems.IPointerExitHandler
     {
         private ItemView _itemView;
+        private Image _markerImage;
         private bool _markerActive;
 
         internal void Initialize(ItemView itemView, bool markerActive = true)
@@ -175,7 +181,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
             _markerActive = markerActive;
         }
 
-        internal Image MarkerImage => GetComponent<Image>();
+        internal Image MarkerImage => _markerImage != null ? _markerImage : (_markerImage = GetComponent<Image>());
 
         public void OnPointerEnter(UnityEngine.EventSystems.PointerEventData eventData)
         {
@@ -196,6 +202,12 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         private void OnDestroy()
         {
             RaidItemMarkerHandlers.Remove(this);
+            if (!ReferenceEquals(_itemView, null) &&
+                RaidItemMarkers.TryGetValue(_itemView, out UpgradeMarkerHoverHandler handler) &&
+                ReferenceEquals(handler, this))
+            {
+                RaidItemMarkers.Remove(_itemView);
+            }
         }
     }
 
@@ -571,8 +583,11 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         _instance = null;
         _hoveredWorldPanel = null;
         _hoveredRaidItemView = null;
+        _hideoutScreenOverlay = null;
         _upgradeItemNeedsDirty = false;
         _hasLoadedUpgradeItemNeeds = false;
+        _raidItemMarkersDirty = false;
+        _wasInRaid = false;
         ItemIcons.Clear();
         RecipeOutputItems.Clear();
         CurrentUpgradeItemNeeds.Clear();
@@ -595,6 +610,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         }
 
         RaidItemMarkerHandlers.Clear();
+        RaidItemMarkers.Clear();
         RaidItemViews.Clear();
         MissingRecipeWarnings.Clear();
         TraderAvatarTasks.Clear();
@@ -604,26 +620,61 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private void Update()
     {
-        if (!_hasLoadedUpgradeItemNeeds &&
-            Time.realtimeSinceStartup >= _nextUpgradeItemNeedsLoadRetryAt)
+        bool inRaid = IsInRaid();
+        if (inRaid && !_wasInRaid)
+        {
+            _hoveredWorldPanel = null;
+            _reopenArea = null;
+            ResetFolderUi();
+            RestoreFolderBarSpace();
+            CraftFolderPanels.Clear();
+            if (_statusHost != null)
+            {
+                UnityEngine.Object.Destroy(_statusHost.gameObject);
+                _statusHost = null;
+            }
+            if (_claimAllButton != null)
+            {
+                _claimAllButton.gameObject.SetActive(false);
+            }
+        }
+        else if (!inRaid && _wasInRaid)
+        {
+            _upgradeItemNeedsDirty = true;
+            _upgradeItemNeedsRefreshAt = 0f;
+        }
+        _wasInRaid = inRaid;
+
+        if (!_hasLoadedUpgradeItemNeeds)
         {
             EnsureUpgradeItemNeedsLoaded();
-            _nextUpgradeItemNeedsLoadRetryAt = Time.realtimeSinceStartup + 1.5f;
         }
 
-        if (_upgradeItemNeedsDirty && Time.realtimeSinceStartup >= _upgradeItemNeedsRefreshAt)
+        if (_upgradeItemNeedsDirty && !inRaid && Time.realtimeSinceStartup >= _upgradeItemNeedsRefreshAt)
         {
-            _upgradeItemNeedsDirty = false;
+            _upgradeItemNeedsRefreshAt = Time.realtimeSinceStartup + 1.5f;
             RefreshUpgradeItemNeedsFromHideout();
+            if (!_upgradeItemNeedsDirty)
+            {
+                _raidItemMarkersDirty = true;
+            }
+        }
+
+        if (_raidItemMarkersDirty)
+        {
+            _raidItemMarkersDirty = false;
             RefreshRaidItemMarkers();
         }
     }
 
     private void OnGUI()
     {
-        RefreshClaimAllButton();
-        DrawCraftFolderBar();
-        DrawWorldPanelTooltip();
+        if (!IsInRaid() && _hideoutScreenOverlay != null && _hideoutScreenOverlay.gameObject.activeInHierarchy)
+        {
+            RefreshClaimAllButton();
+            DrawCraftFolderBar();
+            DrawWorldPanelTooltip();
+        }
         if (_showUpgradeItemTooltipsOnHover.Value)
         {
             DrawRaidItemUpgradeTooltip();
@@ -657,7 +708,8 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void RefreshClaimAllButton()
     {
-        if (_claimAllButton == null || Time.realtimeSinceStartup < _nextClaimAllRefreshAt)
+        if (_claimAllButton == null || !_claimAllButton.gameObject.activeInHierarchy ||
+            Time.realtimeSinceStartup < _nextClaimAllRefreshAt)
         {
             return;
         }
@@ -795,12 +847,15 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
     // While a station is busy the game dims recipes and hides ingredient counts; keep them readable.
     private static void ForceRequirementStatusVisible(ref bool canStartProduction)
     {
-        canStartProduction = true;
+        if (!IsInRaid())
+        {
+            canStartProduction = true;
+        }
     }
 
     private static void OnProduceViewButtonsUpdated(ProduceView __instance)
     {
-        if (__instance == null || __instance.Producer == null || __instance.Scheme == null || __instance._startButton == null)
+        if (IsInRaid() || __instance == null || __instance.Producer == null || __instance.Scheme == null || __instance._startButton == null)
         {
             return;
         }
@@ -816,7 +871,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static bool OnBuyMaterialsClicked(ProduceView __instance)
     {
-        if (__instance?.Producer != null)
+        if (!IsInRaid() && __instance?.Producer != null)
         {
             _reopenArea = __instance.Producer.AreaType;
         }
@@ -827,7 +882,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
     // Preserve the station menu when returning from the flea market.
     private static bool SkipSubstrateCloseForFlea()
     {
-        return !(_reopenArea.HasValue && _openStationMenuWithoutZoom.Value);
+        return IsInRaid() || !(_reopenArea.HasValue && _openStationMenuWithoutZoom.Value);
     }
 
     private static bool TryKeepStationOpen(HideoutScreenOverlay overlay, EAreaType area)
@@ -850,10 +905,15 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         try
         {
             await Task.Delay(500);
+            if (IsInRaid() || overlay == null || !overlay.gameObject.activeInHierarchy)
+            {
+                return;
+            }
+
             AreaData areaData = Singleton<HideoutRepresentation>.Instantiated
                 ? Singleton<HideoutRepresentation>.Instance.AreaDatas.FirstOrDefault(data => data?.Template?.Type == area)
                 : null;
-            if (overlay != null && areaData != null)
+            if (areaData != null)
             {
                 FieldInfo substrateField = AccessTools.Field(typeof(HideoutScreenOverlay), "_areaSubstrate");
                 if (_openStationMenuWithoutZoom.Value &&
@@ -882,7 +942,17 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void OnHideoutScreenShown(HideoutScreenOverlay __instance)
     {
+        if (IsInRaid())
+        {
+            return;
+        }
+
         EnsureClaimAllButton(__instance);
+        _hideoutScreenOverlay = __instance;
+        if (_claimAllButton != null)
+        {
+            _claimAllButton.gameObject.SetActive(true);
+        }
         if (_reopenArea.HasValue)
         {
             EAreaType area = _reopenArea.Value;
@@ -894,7 +964,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         }
         ApplyBottomBarVisibility(__instance);
         RefreshUpgradeItemNeedsFromHideout();
-        RefreshRaidItemMarkers();
+        _raidItemMarkersDirty = true;
     }
 
     private static void AfterWishlistViewShown(Component __instance)
@@ -945,7 +1015,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
     {
         if (__instance != null && __1 == CommandStatus.Succeed)
         {
-            RefreshRaidItemMarkers();
+            _raidItemMarkersDirty = true;
         }
     }
 
@@ -1045,10 +1115,18 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void EnsureUpgradeItemNeedsLoaded()
     {
-        if (!_hasLoadedUpgradeItemNeeds && Singleton<HideoutRepresentation>.Instantiated)
+        if (!_hasLoadedUpgradeItemNeeds &&
+            Time.realtimeSinceStartup >= _nextUpgradeItemNeedsLoadRetryAt)
         {
-            RefreshUpgradeItemNeedsFromHideout();
-            RefreshRaidItemMarkers();
+            _nextUpgradeItemNeedsLoadRetryAt = Time.realtimeSinceStartup + 1.5f;
+            if (Singleton<HideoutRepresentation>.Instantiated)
+            {
+                RefreshUpgradeItemNeedsFromHideout();
+                if (_hasLoadedUpgradeItemNeeds)
+                {
+                    _raidItemMarkersDirty = true;
+                }
+            }
         }
     }
 
@@ -1083,6 +1161,11 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void OnWorldPanelPointerEntered(AreaWorldPanel __instance)
     {
+        if (IsInRaid())
+        {
+            return;
+        }
+
         if (_hoveredWorldPanel != __instance)
         {
             _nextRequirementRefreshAt = 0f;
@@ -1101,7 +1184,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static bool OnWorldPanelPointerClicked(AreaWorldPanel __instance, UnityEngine.EventSystems.PointerEventData eventData)
     {
-        if (!_openStationMenuWithoutZoom.Value ||
+        if (IsInRaid() || !_openStationMenuWithoutZoom.Value ||
             eventData.button != UnityEngine.EventSystems.PointerEventData.InputButton.Left ||
             __instance.Data == null)
         {
@@ -1441,15 +1524,20 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void RefreshFallbackRaidItemMarker(ItemView itemView)
     {
+        RaidItemMarkers.TryGetValue(itemView, out UpgradeMarkerHoverHandler markerHandler);
         Item item = itemView.Item;
         if (item == null)
         {
             RaidItemViews.Remove(itemView);
-            UpgradeMarkerHoverHandler existingMarkerHandler = FindRaidItemMarker(itemView);
-            if (existingMarkerHandler != null && existingMarkerHandler.MarkerImage != null)
+            if (markerHandler != null && markerHandler.MarkerImage != null)
             {
-                existingMarkerHandler.MarkerImage.enabled = false;
-                existingMarkerHandler.Initialize(itemView, false);
+                markerHandler.MarkerImage.enabled = false;
+                markerHandler.Initialize(itemView, false);
+            }
+            if (_hoveredRaidItemView == itemView)
+            {
+                _hoveredRaidItemView = null;
+                _raidItemTooltipTemplateId = null;
             }
 
             return;
@@ -1463,7 +1551,6 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
             out bool needsFuture,
             out bool needsFavoriteCraft);
 
-        UpgradeMarkerHoverHandler markerHandler = FindRaidItemOverlayMarker(itemView);
         if (markerHandler == null)
         {
             if (!needsCurrent && !needsFuture && !needsFavoriteCraft)
@@ -1508,9 +1595,19 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         if (markerImage.enabled)
         {
             ConfigureRaidItemMarkerCorner(markerImage.rectTransform);
-            markerLayer.SetAsLastSibling();
-            markerImage.transform.SetAsLastSibling();
-            markerImage.sprite = GetUpgradeMarkerSprite(needsCurrent, needsFuture, needsFavoriteCraft);
+            if (markerLayer.GetSiblingIndex() != markerLayer.parent.childCount - 1)
+            {
+                markerLayer.SetAsLastSibling();
+            }
+            if (markerImage.transform.GetSiblingIndex() != markerImage.transform.parent.childCount - 1)
+            {
+                markerImage.transform.SetAsLastSibling();
+            }
+            Sprite sprite = GetUpgradeMarkerSprite(needsCurrent, needsFuture, needsFavoriteCraft);
+            if (markerImage.sprite != sprite)
+            {
+                markerImage.sprite = sprite;
+            }
         }
     }
 
@@ -1560,28 +1657,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
     private static bool IsInRaid()
     {
         return Singleton<GameWorld>.Instantiated &&
-            Singleton<GameWorld>.Instance.MainPlayer != null;
-    }
-
-    private static UpgradeMarkerHoverHandler FindRaidItemMarker(ItemView itemView)
-    {
-        return itemView.GetComponentInChildren<UpgradeMarkerHoverHandler>(true);
-    }
-
-    private static UpgradeMarkerHoverHandler FindRaidItemOverlayMarker(ItemView itemView)
-    {
-        UpgradeMarkerHoverHandler[] markerHandlers =
-            itemView.GetComponentsInChildren<UpgradeMarkerHoverHandler>(true);
-        foreach (UpgradeMarkerHoverHandler markerHandler in markerHandlers)
-        {
-            if (markerHandler.transform.parent != null &&
-                markerHandler.transform.parent.name == RaidItemMarkerLayerName)
-            {
-                return markerHandler;
-            }
-        }
-
-        return null;
+            Singleton<GameWorld>.Instance is not HideoutGameWorld;
     }
 
     private static UpgradeMarkerHoverHandler CreateRaidItemMarker(ItemView itemView)
@@ -1608,6 +1684,7 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         UpgradeMarkerHoverHandler markerHandler = markerObject.AddComponent<UpgradeMarkerHoverHandler>();
         markerHandler.Initialize(itemView);
         RaidItemMarkerHandlers.Add(markerHandler);
+        RaidItemMarkers[itemView] = markerHandler;
 
         return markerHandler;
     }
@@ -1644,13 +1721,12 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
         }
 
         RectTransform markerLayerRect = (RectTransform)markerLayer;
-        markerLayerRect.anchorMin = Vector2.zero;
-        markerLayerRect.anchorMax = Vector2.one;
-        markerLayerRect.localRotation = Quaternion.identity;
-        markerLayerRect.localScale = Vector3.one;
-        markerLayerRect.offsetMin = Vector2.zero;
-        markerLayerRect.offsetMax = Vector2.zero;
-        markerLayer.SetAsLastSibling();
+        if (markerLayerRect.anchorMin != Vector2.zero) markerLayerRect.anchorMin = Vector2.zero;
+        if (markerLayerRect.anchorMax != Vector2.one) markerLayerRect.anchorMax = Vector2.one;
+        if (markerLayerRect.localRotation != Quaternion.identity) markerLayerRect.localRotation = Quaternion.identity;
+        if (markerLayerRect.localScale != Vector3.one) markerLayerRect.localScale = Vector3.one;
+        if (markerLayerRect.offsetMin != Vector2.zero) markerLayerRect.offsetMin = Vector2.zero;
+        if (markerLayerRect.offsetMax != Vector2.zero) markerLayerRect.offsetMax = Vector2.zero;
 
         return markerLayerRect;
     }
@@ -1663,10 +1739,11 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
             _itemMarkerCorner.Value == ItemMarkerCorner.TopRight;
         var anchor = new Vector2(left ? 0f : 1f, top ? 1f : 0f);
 
-        markerRect.anchorMin = anchor;
-        markerRect.anchorMax = anchor;
-        markerRect.pivot = anchor;
-        markerRect.anchoredPosition = new Vector2(left ? 1f : -1f, top ? -1f : 1f);
+        if (markerRect.anchorMin != anchor) markerRect.anchorMin = anchor;
+        if (markerRect.anchorMax != anchor) markerRect.anchorMax = anchor;
+        if (markerRect.pivot != anchor) markerRect.pivot = anchor;
+        var position = new Vector2(left ? 1f : -1f, top ? -1f : 1f);
+        if (markerRect.anchoredPosition != position) markerRect.anchoredPosition = position;
     }
 
     private static Sprite GetUpgradeMarkerSprite(
@@ -3251,6 +3328,11 @@ public sealed partial class HideoutWeDeserveUIImprovementsPlugin : BaseUnityPlug
 
     private static void OnBottomBarSettingChanged(object sender, EventArgs args)
     {
+        if (IsInRaid())
+        {
+            return;
+        }
+
         HideoutScreenOverlay overlay = UnityEngine.Object.FindObjectOfType<HideoutScreenOverlay>();
         if (overlay != null)
         {
