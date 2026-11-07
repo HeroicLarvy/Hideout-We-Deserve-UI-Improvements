@@ -10,14 +10,10 @@ The first in a series of hideout QoL and redesign mods. SPT 4.1.6
 - Open station menu without zooming
 - Item markers for current and future upgrade requirements
 - Item markers for favorited craft ingredients
-- Craft folders (up to 5) - toggle: `EnableFolders`
-- Active craft bar - toggle: `EnableActiveCraftBar`
+- Drag-Drop crafting folders - only loads recipes of selected folder, much more responsive!
+- Active craft bar
+- Claim all button to get all crafted items
 
-Hideout-only overlays and controls are suspended during raids. Item markers and
-their tooltips remain available in raid, using a snapshot of hideout requirements
-that is refreshed after returning to the menus. If no snapshot is available yet,
-the mod loads one when the hideout data becomes available. Requirement counts
-can therefore be temporarily out of date during a raid.
 
 ## Install
 
